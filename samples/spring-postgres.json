@@ -1,0 +1,30 @@
+{
+  "server": {
+    "url": "https://monitor.example.com",
+    "agentId": "ag_REPLACE_WITH_ID_FROM_SETUP",
+    "agentKey": "REPLACE_WITH_KEY_FROM_SETUP"
+  },
+  "spoolDir": "/opt/fyntune-agent/spool",
+
+  "accessLogs": [
+    { "path": "/opt/app/logs/access.log", "format": "tomcat" }
+  ],
+  "appLogs": [
+    { "path": "/opt/app/logs/app.log", "errorPattern": "^\\S+\\s+(ERROR|FATAL)\\b" }
+  ],
+
+  "db": {
+    "engine": "postgres",
+    "url": "jdbc:postgresql://127.0.0.1:5432/appdb",
+    "user": "monitor",
+    "password": "REPLACE_WITH_MONITOR_USER_PASSWORD"
+  },
+  "allowServerSqlChecks": false,
+
+  "host": {
+    "disks": ["/"],
+    "processes": [ { "name": "app", "match": "java .*app\\.jar" } ],
+    "ports": [ { "name": "HTTP", "port": 8080 } ]
+  },
+  "localReceiver": { "enabled": true, "port": 7071 }
+}

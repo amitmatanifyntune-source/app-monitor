@@ -1,0 +1,25 @@
+.DS_Store
+.idea/
+.vscode/
+*.iml
+.claude/
+
+server/target/
+agent/target/
+ui/node_modules/
+ui/*.tsbuildinfo
+# built by `npm run build` in ui/
+server/src/main/resources/static/
+
+# an agent's working files and its real config (it holds the agent key and database password)
+spool/
+agent.json
+registration.json
+*.log
+
+.env
+.env.*
+*.pem
+*.key
+*.p12
+*.jks

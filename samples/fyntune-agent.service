@@ -1,0 +1,27 @@
+# systemd unit for the Fyntune agent (Linux).
+#   sudo useradd --system --home /opt/fyntune-agent --shell /usr/sbin/nologin fyntune-agent
+#   sudo mkdir -p /opt/fyntune-agent && sudo cp fyntune-agent.jar agent.json /opt/fyntune-agent/
+#   sudo chown -R fyntune-agent: /opt/fyntune-agent && sudo chmod 600 /opt/fyntune-agent/agent.json
+#   sudo usermod -aG adm fyntune-agent          # read /var/log/nginx (Debian/Ubuntu; use the log files' group elsewhere)
+#   sudo cp fyntune-agent.service /etc/systemd/system/ && sudo systemctl daemon-reload
+#   sudo systemctl enable --now fyntune-agent && journalctl -u fyntune-agent -f
+[Unit]
+Description=Fyntune App Monitor agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=fyntune-agent
+WorkingDirectory=/opt/fyntune-agent
+ExecStart=/usr/bin/java -Xmx128m -jar /opt/fyntune-agent/fyntune-agent.jar /opt/fyntune-agent/agent.json
+Restart=always
+RestartSec=10
+# read-only everywhere except its own folder (spool and state)
+ProtectSystem=strict
+ReadWritePaths=/opt/fyntune-agent
+ProtectHome=true
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

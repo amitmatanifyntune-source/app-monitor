@@ -1,0 +1,20 @@
+# Tests run against their own database (created once: CREATE DATABASE app_monitor_test OWNER monitor), cleaned by Flyway.
+spring:
+  datasource:
+    url: ${TEST_DB_URL:jdbc:postgresql://localhost:5432/app_monitor_test}
+    username: ${DB_USER:monitor}
+    password: ${DB_PASSWORD:monitor}
+  flyway:
+    clean-disabled: false
+
+app:
+  jwt:
+    secret: test-only-secret-test-only-secret-test-only-secret
+  admin:
+    password: Password@123
+  cors:
+    origins: ""
+  alerts:
+    confirm-seconds: 0
+    public-url: https://monitor.example.com
+    initial-delay-ms: 3600000

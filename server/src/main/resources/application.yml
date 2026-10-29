@@ -1,0 +1,61 @@
+server:
+  port: ${PORT:8095}
+  forward-headers-strategy: native
+  error:
+    include-message: never
+    include-stacktrace: never
+  compression:
+    enabled: true
+    mime-types: application/json
+    min-response-size: 2048
+
+spring:
+  application:
+    name: app-monitor
+  autoconfigure:
+    # users come from the database via JWT; no default in-memory user
+    exclude: org.springframework.boot.autoconfigure.security.servlet.UserDetailsServiceAutoConfiguration
+  datasource:
+    # required outside the dev profile: no default credentials
+    url: ${DB_URL}
+    username: ${DB_USER}
+    password: ${DB_PASSWORD}
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+
+app:
+  jwt:
+    secret: ${APP_JWT_SECRET:}
+    expiry-minutes: 480
+  # the first administrator, created once when there are no users; set MONITOR_ADMIN_PASSWORD outside development
+  admin:
+    username: ${MONITOR_ADMIN_USER:admin}
+    password: ${MONITOR_ADMIN_PASSWORD:}
+  # browser origins allowed to call /api (the UI is normally served from the same origin, so none)
+  cors:
+    origins: ${APP_CORS_ORIGINS:}
+  # the agent jar administrators can download from Setup and Help
+  agent-jar: ${AGENT_JAR:../agent/target/fyntune-agent.jar}
+  # an agent is DOWN when it has sent nothing for this long
+  agent-silent-minutes: 3
+  alerts:
+    # the monitor's own address, for the link in each message; leave empty for no link
+    public-url: ${APP_PUBLIC_URL:}
+    # a new status must hold this long before it is sent, so a blip does not page anyone
+    confirm-seconds: 45
+    # while an app stays Down, say so again this often
+    repeat-minutes: 30
+    every-ms: 30000
+    initial-delay-ms: 60000
+    # WhatsApp Business Cloud API (Meta). Messages the monitor starts must use a template Meta has approved; see README.
+    whatsapp:
+      token: ${WHATSAPP_TOKEN:}
+      phone-number-id: ${WHATSAPP_PHONE_NUMBER_ID:}
+      template: ${WHATSAPP_TEMPLATE:app_monitor_alert}
+      language: ${WHATSAPP_TEMPLATE_LANG:en}
+      api: ${WHATSAPP_API:https://graph.facebook.com/v22.0}
+  retention:
+    events-days: 30
+    minutes-days: 90
+    samples-days: 7

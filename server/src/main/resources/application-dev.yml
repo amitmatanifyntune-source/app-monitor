@@ -1,0 +1,14 @@
+# Development profile: used by `./mvnw spring-boot:run`. Never enable it in a shared environment.
+spring:
+  datasource:
+    url: ${DB_URL:jdbc:postgresql://localhost:5432/app_monitor}
+    username: ${DB_USER:monitor}
+    password: ${DB_PASSWORD:monitor}
+
+app:
+  jwt:
+    secret: ${APP_JWT_SECRET:dev-only-monitor-secret-change-me-dev-only-monitor-secret}
+  admin:
+    password: ${MONITOR_ADMIN_PASSWORD:Password@123}
+  cors:
+    origins: ${APP_CORS_ORIGINS:http://localhost:5180}

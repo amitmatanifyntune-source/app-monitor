@@ -1,0 +1,30 @@
+{
+  "server": {
+    "url": "http://localhost:8095",
+    "agentId": "ag_REPLACE_WITH_ID_FROM_SETUP",
+    "agentKey": "REPLACE_WITH_KEY_FROM_SETUP"
+  },
+  "spoolDir": "./spool",
+
+  "accessLogs": [
+    { "path": "/Users/amitpratapmatani/dev-tools/core-access/access.log", "format": "tomcat" }
+  ],
+  "appLogs": [
+    { "path": "/Users/amitpratapmatani/dev-tools/backend.log", "errorPattern": "^\\S+\\s+(ERROR|FATAL)\\b" }
+  ],
+
+  "db": {
+    "engine": "postgres",
+    "url": "jdbc:postgresql://localhost:5432/insurance_core",
+    "user": "app_monitor_probe",
+    "password": "REPLACE_WITH_PROBE_PASSWORD"
+  },
+  "allowServerSqlChecks": true,
+
+  "host": {
+    "disks": ["/"],
+    "processes": [ { "name": "Proton core", "match": "InsuranceCoreApplication|insurance-core" } ],
+    "ports": [ { "name": "API", "port": 8080 } ]
+  },
+  "localReceiver": { "enabled": true, "port": 7071 }
+}

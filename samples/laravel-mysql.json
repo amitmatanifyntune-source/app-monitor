@@ -1,0 +1,34 @@
+{
+  "server": {
+    "url": "https://monitor.example.com",
+    "agentId": "ag_REPLACE_WITH_ID_FROM_SETUP",
+    "agentKey": "REPLACE_WITH_KEY_FROM_SETUP"
+  },
+  "spoolDir": "/opt/fyntune-agent/spool",
+
+  "accessLogs": [
+    { "path": "/var/log/nginx/access.log", "format": "nginx" }
+  ],
+  "appLogs": [
+    { "path": "/var/www/app/storage/logs/laravel.log" }
+  ],
+
+  "db": {
+    "engine": "mysql",
+    "url": "jdbc:mysql://127.0.0.1:3306/appdb",
+    "user": "monitor",
+    "password": "REPLACE_WITH_MONITOR_USER_PASSWORD"
+  },
+  "allowServerSqlChecks": false,
+
+  "host": {
+    "disks": ["/", "/var/www"],
+    "processes": [
+      { "name": "php-fpm", "match": "php-fpm" },
+      { "name": "nginx", "match": "nginx: master" },
+      { "name": "queue worker", "match": "artisan queue:work" }
+    ],
+    "ports": [ { "name": "MySQL", "port": 3306 } ]
+  },
+  "localReceiver": { "enabled": true, "port": 7071 }
+}

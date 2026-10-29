@@ -1,0 +1,18 @@
+#!/bin/sh
+# Minimal Maven wrapper: downloads the Maven distribution named in
+# .mvn/wrapper/maven-wrapper.properties into ~/.m2/wrapper and runs it.
+set -e
+BASEDIR=$(cd "$(dirname "$0")" && pwd)
+PROPS="$BASEDIR/.mvn/wrapper/maven-wrapper.properties"
+URL=$(sed -n 's/^distributionUrl=//p' "$PROPS" | tr -d '\r')
+NAME=$(basename "$URL" -bin.zip)
+DEST="${MAVEN_USER_HOME:-$HOME/.m2}/wrapper/dists/$NAME"
+if [ ! -x "$DEST/$NAME/bin/mvn" ]; then
+  echo "Downloading $URL"
+  mkdir -p "$DEST"
+  TMP="$DEST/dist.zip"
+  if command -v curl >/dev/null 2>&1; then curl -fsSL -o "$TMP" "$URL"; else wget -q -O "$TMP" "$URL"; fi
+  unzip -q -o "$TMP" -d "$DEST"
+  rm -f "$TMP"
+fi
+exec "$DEST/$NAME/bin/mvn" -f "$BASEDIR/pom.xml" "$@"
