@@ -1,5 +1,30 @@
 # Install the agent on an application server (Ubuntu 22.04 / 24.04)
 
+## Fastest: one script does everything (Docker)
+Copy this folder to the app server and run:
+
+```bash
+sudo ./setup-client.sh
+```
+
+It asks for the monitor URL, an app code, the health URL and the monitor admin password (used once, not stored), then:
+
+1. adds the app in the monitor, registers this server's agent, downloads `fyntune-agent.jar` and adds the health check;
+2. adds a separate timed access log to nginx or Apache (`fyntune-access.log`; existing logs and formats untouched;
+   config is tested and restored if the test fails);
+3. finds the Laravel/PHP app, `laravel.log`, PHP-FPM log, queue workers, processes and listening ports, and adds
+   logrotate for `laravel.log`;
+4. creates a read-only `fyntune_monitor` database user (MySQL/MariaDB or PostgreSQL) when local root access works;
+5. installs Docker, writes `/opt/fyntune-agent/agent.json`, builds the agent image (Java 21 inside), runs the
+   self-test and starts it.
+
+No questions: `sudo MONITOR_URL=https://monitor.example.com APP_CODE=billing-portal HEALTH_URL=https://billing.example.com/up ./setup-client.sh --yes`
+(password from `MONITOR_PASSWORD` or prompted). Options: `--no-db`, `--no-web-log`, `--laravel-single` (switch
+Laravel's daily logs to one file). Running it again reuses the same agent and app. Every file it changes is copied to
+`/var/backups/fyntune-agent/<date>/` first. No monitor password on hand? Put the `agent.json` downloaded from
+Setup → Agents and `fyntune-agent.jar` next to the script; it then needs no sign-in (except to add the health check).
+
+## Step by step instead
 Two ways, both bring their own Java 21, so the application's Java (17, 11, none for PHP) is never changed.
 
 | | Docker (`install-docker.sh`) | systemd (`install-systemd.sh`) |
