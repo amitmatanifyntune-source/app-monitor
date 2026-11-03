@@ -37,8 +37,16 @@ sudo ./enable-otel.sh --disable        # turn PHP tracing off again
 
 It touches only the agent's `otlp` setting (restarting the agent if needed), the PHP `opentelemetry` extension,
 PHP-FPM's `OTEL_*` variables and the app's Composer packages; web server, logs, database user and the monitor
-registration stay as they are. The agent must be 0.2.0 or newer: if it is older, put the new `fyntune-agent.jar`
-(Help → Download agent) next to the script and it is installed.
+registration stay as they are.
+
+**An older agent (for example 0.1.1) is upgraded in place**, no reinstall and no password: the script fetches the
+monitor's current agent with this agent's own id and key from `agent.json` (checksum verified), keeps the old jar in the
+backup folder, gives Docker installs the kit's newer `Dockerfile` and `docker-compose.yml` and systemd installs the lean
+JVM settings and CPU/memory caps, restarts the agent and checks which version came up. The monitor must be upgraded
+first (0.2+ hands out the agent); with an older monitor, put the new `fyntune-agent.jar` next to the script instead.
+
+**Just upgrade the agent**, nothing else: `sudo ./update-agent.sh` (same as `enable-otel.sh --upgrade-only`).
+`enable-otel.sh --upgrade-agent` also upgrades an agent that is already 0.2+.
 
 **The app's OpenTelemetry packages** are added on the server for you (`--no-composer` to skip): the SDK, the OTLP
 exporter, PDO instrumentation, plus Laravel, Guzzle or Symfony HTTP client instrumentation when the app uses them, and an

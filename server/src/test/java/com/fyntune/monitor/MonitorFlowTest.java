@@ -242,4 +242,21 @@ class MonitorFlowTest {
                 .contentType(MediaType.APPLICATION_JSON).content(bos.toByteArray())).andExpect(status().isOk());
         assertEquals(7, call(get("/api/apps/zipped/traffic?minutes=5"), admin, null, 200).at("/last5/requests").asLong());
     }
+
+    @Test
+    void agentsFetchTheCurrentJarWithTheirOwnKey() throws Exception {
+        call(post("/api/admin/apps"), admin, Map.of("code", "upgrading", "name", "Upgrading"), 200);
+        JsonNode reg = call(post("/api/admin/apps/upgrading/agents"), admin, Map.of("name", "u-1"), 200);
+        String id = reg.get("agentId").asText(), key = reg.get("agentKey").asText();
+        mvc.perform(get("/ingest/v1/agent.jar").header("X-Agent-Id", id).header("X-Agent-Key", "wrong")).andExpect(status().isUnauthorized());
+        mvc.perform(get("/ingest/v1/agent.jar")).andExpect(status().isUnauthorized());
+        var res = mvc.perform(get("/ingest/v1/agent.jar").header("X-Agent-Id", id).header("X-Agent-Key", key)).andReturn().getResponse();
+        if (res.getStatus() == 404) return;   // no agent jar built next to this server in this checkout
+        assertEquals(200, res.getStatus());
+        byte[] body = res.getContentAsByteArray();
+        String sha = java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256").digest(body));
+        assertEquals(sha, res.getHeader("X-Agent-Sha256"));
+        assertNotNull(res.getHeader("X-Agent-Version"));
+        assertEquals("PK", new String(body, 0, 2), "a jar (zip) file");
+    }
 }

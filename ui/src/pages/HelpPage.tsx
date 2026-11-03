@@ -174,7 +174,8 @@ SELECT policy_no AS ref FROM policy WHERE status = 'ISSUED' AND document_id IS N
           <p>On a server that already has the agent, run only <span className="mono">sudo ./enable-otel.sh</span> from the agent kit (or <span className="mono">setup-client.sh --otel</span> on a new server).
             It turns on the agent's receiver, installs the PHP extension, sets PHP-FPM's variables and adds the app's OpenTelemetry Composer packages
             (dry run first, nothing upgraded, rolled back if the app no longer loads); <span className="mono">--disable</span> turns tracing off again.
-            Then commit <span className="mono">composer.json</span> and <span className="mono">composer.lock</span> to the app's repository so the next deploy keeps them. By hand, the same is:</p>
+            Then commit <span className="mono">composer.json</span> and <span className="mono">composer.lock</span> to the app's repository so the next deploy keeps them.
+            An agent older than 0.2 is upgraded in place first, fetched from this server with its own key; <span className="mono">sudo ./update-agent.sh</span> upgrades the agent alone. By hand, the same is:</p>
           <Code>{`sudo pecl install opentelemetry            # PHP 8.0+, then enable extension=opentelemetry.so
 composer require open-telemetry/sdk open-telemetry/exporter-otlp php-http/guzzle7-adapter \
   open-telemetry/opentelemetry-auto-laravel open-telemetry/opentelemetry-auto-pdo open-telemetry/opentelemetry-auto-guzzle

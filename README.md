@@ -167,6 +167,8 @@ separate collector is needed. Details and limits: `PROTOCOL.md`; per-stack steps
 - **Only OpenTelemetry, agent already installed:** `sudo deploy/agent/enable-otel.sh` (`--java` for Java, `--disable` to undo).
   For PHP it also adds the app's Composer packages on the server (dry run first, rolled back on failure; `--no-composer`
   to skip). Commit `composer.json` and `composer.lock` to the app's repository afterwards.
+  An older agent is upgraded in place first (fetched from the monitor with its own key). `deploy/agent/update-agent.sh`
+  upgrades the agent alone.
 - **PHP / Laravel:** `deploy/agent/setup-client.sh --otel` installs the `opentelemetry` extension (PHP 8.0+) and sets
   PHP-FPM's `OTEL_*` variables. The app adds `open-telemetry/sdk open-telemetry/exporter-otlp php-http/guzzle7-adapter
   open-telemetry/opentelemetry-auto-laravel open-telemetry/opentelemetry-auto-pdo open-telemetry/opentelemetry-auto-guzzle`.
