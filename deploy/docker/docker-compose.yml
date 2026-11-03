@@ -1,0 +1,63 @@
+# App Monitor on one server: Postgres + monitor server + Caddy (automatic HTTPS).
+# Usage (from this folder):  cp env.example .env  (or run install.sh)  then  docker compose up -d --build
+name: app-monitor
+
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: app_monitor
+      POSTGRES_USER: monitor
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?set DB_PASSWORD in .env}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U monitor -d app_monitor"]
+      interval: 5s
+      retries: 20
+    # no ports: only the server reaches the database, on the internal network
+
+  server:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile
+    image: app-monitor-server:latest
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DB_URL: jdbc:postgresql://db:5432/app_monitor
+      DB_USER: monitor
+      DB_PASSWORD: ${DB_PASSWORD}
+      APP_JWT_SECRET: ${APP_JWT_SECRET:?set APP_JWT_SECRET in .env}
+      MONITOR_ADMIN_PASSWORD: ${MONITOR_ADMIN_PASSWORD:?set MONITOR_ADMIN_PASSWORD in .env}
+      APP_PUBLIC_URL: https://${SITE}
+      JAVA_OPTS: ${JAVA_OPTS:--XX:MaxRAMPercentage=75 -XX:+ExitOnOutOfMemoryError}
+      # optional WhatsApp alerts; see the main README
+      WHATSAPP_TOKEN: ${WHATSAPP_TOKEN:-}
+      WHATSAPP_PHONE_NUMBER_ID: ${WHATSAPP_PHONE_NUMBER_ID:-}
+    mem_limit: ${SERVER_MEM_LIMIT:-1g}
+    # no ports: Caddy is the only way in
+
+  web:
+    image: caddy:2.10.2-alpine
+    restart: unless-stopped
+    depends_on:
+      - server
+    environment:
+      SITE: ${SITE:?set SITE in .env}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+
+volumes:
+  pgdata:
+  caddy_data:
+  caddy_config:

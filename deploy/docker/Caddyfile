@@ -1,0 +1,12 @@
+# HTTPS in front of the monitor. Caddy gets and renews a Let's Encrypt certificate for $SITE by itself;
+# ports 80 and 443 must be open and the name must point at this server.
+{$SITE} {
+	encode gzip
+	reverse_proxy server:8095
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options nosniff
+		Referrer-Policy no-referrer
+		-Server
+	}
+}
