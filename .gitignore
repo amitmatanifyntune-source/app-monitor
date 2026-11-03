@@ -27,3 +27,7 @@ registration.json
 # Docker deploy: secrets, first admin password and database dumps on the server
 deploy/docker/admin-password
 deploy/docker/backups/
+
+# agent kit on a server: the real config and the downloaded jar
+deploy/agent/fyntune-agent.jar
+deploy/agent/.env

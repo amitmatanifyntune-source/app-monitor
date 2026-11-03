@@ -1,0 +1,72 @@
+# Install the agent on an application server (Ubuntu 22.04 / 24.04)
+
+## Fastest: one script does everything (Docker)
+Copy this folder to the app server and run:
+
+```bash
+sudo ./setup-client.sh
+```
+
+It asks for the monitor URL, an app code, the health URL and the monitor admin password (used once, not stored), then:
+
+1. adds the app in the monitor, registers this server's agent, downloads `fyntune-agent.jar` and adds the health check;
+2. adds a separate timed access log to nginx or Apache (`fyntune-access.log`; existing logs and formats untouched;
+   config is tested and restored if the test fails);
+3. finds the Laravel/PHP app, `laravel.log`, PHP-FPM log, queue workers, processes and listening ports, and adds
+   logrotate for `laravel.log`;
+4. creates a read-only `fyntune_monitor` database user (MySQL/MariaDB or PostgreSQL) when local root access works;
+5. installs Docker, writes `/opt/fyntune-agent/agent.json`, builds the agent image (Java 21 inside), runs the
+   self-test and starts it.
+
+No questions: `sudo MONITOR_URL=https://monitor.example.com APP_CODE=billing-portal HEALTH_URL=https://billing.example.com/up ./setup-client.sh --yes`
+(password from `MONITOR_PASSWORD` or prompted). Options: `--no-db`, `--no-web-log`, `--laravel-single` (switch
+Laravel's daily logs to one file). Running it again reuses the same agent and app. Every file it changes is copied to
+`/var/backups/fyntune-agent/<date>/` first. No monitor password on hand? Put the `agent.json` downloaded from
+Setup → Agents and `fyntune-agent.jar` next to the script; it then needs no sign-in (except to add the health check).
+
+## Step by step instead
+Two ways, both bring their own Java 21, so the application's Java (17, 11, none for PHP) is never changed.
+
+| | Docker (`install-docker.sh`) | systemd (`install-systemd.sh`) |
+|---|---|---|
+| Java on the host | none: Java 21 is inside the image | `openjdk-21-jre-headless` installed next to existing Java; the system default `java` is kept |
+| Best when | the server already runs Docker, or you want nothing on the host but the container | no Docker on the server, or the client does not allow it |
+| Sees the host's processes, ports, DB | yes (`pid: host`, `network_mode: host`) | yes |
+| Logs | read through read-only mounts (`/var/log`, `APP_DIR`) | read directly (user in `adm`, `www-data`) |
+| Disks in `agent.json` | `"/host"`, `"/host/var/www"` (host `/` is mounted at `/host`) | `"/"`, `"/var/www"` |
+| Upgrade | replace the jar, `docker compose up -d --build` | replace the jar in `/opt/fyntune-agent`, `systemctl restart fyntune-agent` |
+
+## Steps (both ways)
+1. In the App Monitor: add the app, then **Setup → Agents → Register** and download `agent.json`;
+   **Help → Download agent** for `fyntune-agent.jar`.
+2. Copy this folder to the server with those two files inside it:
+   ```bash
+   scp -r deploy/agent ubuntu@<server>:~/fyntune-agent      # then add agent.json and fyntune-agent.jar
+   ```
+3. Edit `agent.json`: access log, app logs, optional `db`, processes, ports (see `agent.docker.example.json` and
+   `docs/onboarding-guide.md`). Set up the access-log format first (nginx `$request_time`, Apache/Tomcat `%D`).
+4. Run one installer:
+   ```bash
+   cd ~/fyntune-agent
+   sudo ./install-docker.sh /var/www      # Docker; argument = folder holding the app's logs
+   # or
+   sudo ./install-systemd.sh              # no Docker
+   ```
+   Both run the agent's `--test` first and stop if anything is marked ✗. The Docker installer also sets
+   `spoolDir` to `/data` and turns disks into `/host…` paths for you.
+5. In the App Monitor, add the health check and alerts; the app should show Up within 2–3 minutes.
+
+## Docker details
+- `network_mode: host` and `pid: host` let the container see the host's ports, `127.0.0.1` database and processes.
+  No port is published; the agent only makes outbound HTTPS calls to the monitor.
+- The container is read-only, drops all Linux capabilities except `DAC_READ_SEARCH` (read any log file, write none)
+  and has `no-new-privileges`. Its only writable place is the `spool` volume.
+- `-XX:-UseContainerSupport` makes Java report the host's CPU and memory instead of the container's.
+- Logs outside `/var/log` and `APP_DIR` need one more line under `volumes:` (same path on both sides, `:ro`).
+- Commands, in this folder: `sudo docker compose logs -f`, `sudo docker compose restart`,
+  `sudo docker compose run --rm agent --test`, remove: `sudo docker compose down -v`.
+
+## Java 17 on the server?
+Not a problem with either installer: the agent runs on its own Java 21 and the application keeps its Java.
+`install-systemd.sh` checks that installing Java 21 did not change the server's default `java` and puts it back if
+it did.
