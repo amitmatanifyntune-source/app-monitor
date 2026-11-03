@@ -1,0 +1,30 @@
+# Fyntune agent in Docker, on the application server. It watches the HOST, so it shares the host's network
+# (ports, database on 127.0.0.1, local receiver :7071) and process list, and reads logs through read-only mounts.
+#   sudo ./install-docker.sh        (or: docker compose run --rm agent --test  &&  docker compose up -d)
+name: fyntune-agent
+
+services:
+  agent:
+    build: .
+    image: fyntune-agent:latest
+    restart: unless-stopped
+    network_mode: host          # sees the host's ports and 127.0.0.1 services; no ports are published
+    pid: host                   # sees the host's processes (php-fpm, nginx, java, ...)
+    read_only: true
+    cap_drop: [ALL]
+    cap_add: [DAC_READ_SEARCH]  # read log files whatever their owner; it cannot write to them
+    security_opt: ["no-new-privileges:true"]
+    mem_limit: 256m
+    tmpfs: [/tmp]
+    volumes:
+      - ./agent.json:/etc/fyntune-agent/agent.json:ro
+      - spool:/data                                    # spoolDir in agent.json must be "/data"
+      - /var/log:/var/log:ro                           # nginx, Apache, PHP, syslog
+      - ${APP_DIR:-/var/www}:${APP_DIR:-/var/www}:ro   # app logs at the same path as on the host
+      - /:/host:ro                                     # disk space only: list disks as "/host", "/host/var/www"
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+
+volumes:
+  spool:
