@@ -126,6 +126,12 @@ SQL checks from the server run only when the agent's local `agent.json` sets `"a
 runs them on a read-only connection with a 10 s timeout and accepts only `SELECT` or `WITH`. Database credentials are
 only in the local `agent.json` and are never sent to the server.
 
+## `GET /ingest/v1/agent.jar`
+The monitor's current agent jar, for an agent's server to upgrade in place (`enable-otel.sh`, `update-agent.sh`). The
+agent's own `X-Agent-Id` and `X-Agent-Key` authenticate it, so no administrator password is needed on the client's
+server. Headers `X-Agent-Version` and `X-Agent-Sha256` give the version (from the jar's manifest) and checksum; the
+scripts refuse a download whose checksum does not match. Each fetch is written to the audit log as `agent:<id>`.
+
 ## `POST http://127.0.0.1:7071/v1/events` (agent, local only)
 In-app libraries (Laravel, Spring, browser gateway) send events here. The body is a JSON array of `events[]` objects as
 above. Requests can also be sent so the agent counts them like access-log lines:
