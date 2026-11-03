@@ -175,6 +175,18 @@ The agent keeps every failed or slow trace and 5% of the rest, at most 30 a minu
 a few seconds at start-up and roughly 50–100 MB more memory. Measure on UAT before production; turn it off with
 `OTEL_SDK_DISABLED=true`.
 
+## What the agent costs the client's server
+Measured with `-Xmx128m` and the lean JVM flags in `samples/fyntune-agent.service`, under 200 OpenTelemetry spans a second
+(12,000 a minute) on a test machine: **0.67% of one core and 77 MB peak memory** (the first version used 2.0% and 125 MB).
+Idle it uses about 30–45 MB and near 0% CPU. It is also capped by the operating system: `Nice=10`, `CPUQuota=50%`,
+`MemoryMax=256M` under systemd; `cpus: 0.5`, `mem_limit: 192m` in Docker.
+
+How it stays small: traces that will not be kept are let go as soon as their root span arrives; unused span attributes are
+skipped without being decoded (protobuf and streaming JSON); at most 20,000 spans and 2,000 endpoints a minute are held;
+logs are read through one reused 256 KB buffer per file; the database's heavier statistics are read every 10 minutes;
+batches are gzip-compressed on disk and, when the server says it accepts gzip, on the wire. The Servers tab shows each
+agent's own CPU, memory, heap, spool and span counts.
+
 ## Alerts (Slack and WhatsApp)
 Set them up per app, in **Setup → Alerts**. A message goes out when the app becomes **Down** or **Degraded** and has
 stayed that way for 45 seconds. While it stays Down, the message repeats every 30 minutes. One more message goes out

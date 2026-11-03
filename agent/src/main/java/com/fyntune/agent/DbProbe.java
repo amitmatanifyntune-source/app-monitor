@@ -21,6 +21,15 @@ public abstract class DbProbe implements AutoCloseable {
     private Connection conn;
     private Map<String, Object> spec;
     private long specAt;
+    /**
+     * The costly reads (database size, the top statements, the largest tables) run every {@link #HEAVY_EVERY_MS} and are
+     * reused in between, so the client's database does that work 6 times an hour instead of 60. Connections, locks,
+     * running queries and the ping stay per minute.
+     */
+    static final long HEAVY_EVERY_MS = 10 * 60_000;
+    private long heavyAt;
+    private final Map<String, Object> heavyCache = new HashMap<>();
+    protected boolean heavy;
 
     protected DbProbe(AgentConfig.Db cfg, Masker masker) {
         this.cfg = cfg;
@@ -64,7 +73,17 @@ public abstract class DbProbe implements AutoCloseable {
             long ping = (System.nanoTime() - t0) / 1_000_000;
             d.put("up", true);
             d.put("pingMs", ping);
+            long now = System.currentTimeMillis();
+            heavy = now - heavyAt >= HEAVY_EVERY_MS;
             version = collect(c, d, reasons);
+            if (heavy) {
+                heavyAt = now;
+                heavyCache.clear();
+                for (String k : List.of("sizeMb", "statements", "tables")) if (d.containsKey(k)) heavyCache.put(k, d.get(k));
+            } else {
+                heavyCache.forEach(d::putIfAbsent);
+            }
+            d.put("heavyAt", heavyAt);
             d.put("spec", spec(c));
             if (ping > 200) reasons.add("Database answers slowly (" + ping + " ms)");
         } catch (SQLException e) {
@@ -201,12 +220,12 @@ public abstract class DbProbe implements AutoCloseable {
         protected String collect(Connection c, Map<String, Object> d, List<String> reasons) throws SQLException {
             String version = String.valueOf(row(c, "SHOW server_version").values().iterator().next());
             Map<String, Object> s = row(c, """
-                    SELECT pg_database_size(current_database()) / 1048576 AS size_mb, numbackends, xact_commit, xact_rollback, deadlocks, temp_bytes / 1048576 AS temp_mb,
+                    SELECT CASE WHEN ? THEN pg_database_size(current_database()) / 1048576 END AS size_mb, numbackends, xact_commit, xact_rollback, deadlocks, temp_bytes / 1048576 AS temp_mb,
                            CASE WHEN blks_hit + blks_read = 0 THEN 100 ELSE 100.0 * blks_hit / (blks_hit + blks_read) END AS hit
-                      FROM pg_stat_database WHERE datname = current_database()""");
+                      FROM pg_stat_database WHERE datname = current_database()""", heavy);
             long commits = num(s.get("xact_commit"));
             double hit = round1(((Number) s.get("hit")).doubleValue());
-            d.put("sizeMb", num(s.get("size_mb")));
+            if (heavy) d.put("sizeMb", num(s.get("size_mb")));
             d.put("connections", num(s.get("numbackends")));
             d.put("maxConnections", num(row(c, "SELECT setting::int AS v FROM pg_settings WHERE name = 'max_connections'").get("v")));
             d.put("cacheHitPct", hit);
@@ -229,38 +248,40 @@ public abstract class DbProbe implements AutoCloseable {
             maskQueries(running);
             d.put("running", running);
 
-            Map<String, Object> st = new LinkedHashMap<>();
-            try {
-                // the application's queries in this database: not this monitoring user's own, nor catalog or BEGIN/SET
-                List<Map<String, Object>> top = rows(c, """
-                        SELECT query, calls, round(total_exec_time::numeric, 1) AS "totalMs", round(mean_exec_time::numeric, 1) AS "meanMs",
-                               round(max_exec_time::numeric, 1) AS "maxMs", rows,
-                               round((100 * total_exec_time / nullif(sum(total_exec_time) OVER (), 0))::numeric, 1) AS pct
-                          FROM pg_stat_statements
-                         WHERE dbid = (SELECT oid FROM pg_database WHERE datname = current_database())
-                           AND userid <> (SELECT oid FROM pg_roles WHERE rolname = current_user)
-                           AND query ~* '^\\s*(select|insert|update|delete|with)\\M' AND query NOT ILIKE '%pg_catalog.%'
-                         ORDER BY total_exec_time DESC LIMIT 30""");
-                maskQueries(top);
-                st.put("available", true);
-                st.put("rows", top);
-            } catch (SQLException e) {
-                st.put("available", false);
-                st.put("note", "Statement statistics are not available: add pg_stat_statements to shared_preload_libraries and run CREATE EXTENSION pg_stat_statements.");
-                st.put("rows", List.of());
-            }
-            d.put("statements", st);
+            if (heavy) {
+                Map<String, Object> st = new LinkedHashMap<>();
+                try {
+                    // the application's queries in this database: not this monitoring user's own, nor catalog or BEGIN/SET
+                    List<Map<String, Object>> top = rows(c, """
+                            SELECT query, calls, round(total_exec_time::numeric, 1) AS "totalMs", round(mean_exec_time::numeric, 1) AS "meanMs",
+                                   round(max_exec_time::numeric, 1) AS "maxMs", rows,
+                                   round((100 * total_exec_time / nullif(sum(total_exec_time) OVER (), 0))::numeric, 1) AS pct
+                              FROM pg_stat_statements
+                             WHERE dbid = (SELECT oid FROM pg_database WHERE datname = current_database())
+                               AND userid <> (SELECT oid FROM pg_roles WHERE rolname = current_user)
+                               AND query ~* '^\\s*(select|insert|update|delete|with)\\M' AND query NOT ILIKE '%pg_catalog.%'
+                             ORDER BY total_exec_time DESC LIMIT 30""");
+                    maskQueries(top);
+                    st.put("available", true);
+                    st.put("rows", top);
+                } catch (SQLException e) {
+                    st.put("available", false);
+                    st.put("note", "Statement statistics are not available: add pg_stat_statements to shared_preload_libraries and run CREATE EXTENSION pg_stat_statements.");
+                    st.put("rows", List.of());
+                }
+                d.put("statements", st);
 
-            List<Map<String, Object>> tables = rows(c, """
-                    SELECT relname AS "table", n_live_tup AS rows, pg_total_relation_size(relid) / 1024 AS "sizeKb", seq_scan AS "seqScans",
-                           coalesce(idx_scan, 0) AS "idxScans", n_tup_ins + n_tup_upd + n_tup_del AS writes, n_dead_tup AS "deadRows"
-                      FROM pg_stat_user_tables ORDER BY pg_total_relation_size(relid) DESC LIMIT 30""");
-            for (Map<String, Object> t : tables) {
-                long rows = num(t.get("rows")), seq = num(t.get("seqScans")), idx = num(t.get("idxScans")), dead = num(t.get("deadRows"));
-                if (rows >= 5000 && seq > 50 && seq > idx) t.put("hint", "Mostly read by full scans: check the queries' filters have an index");
-                else if (dead > 1000 && dead > rows / 5) t.put("hint", "Many dead rows: vacuum is behind");
+                List<Map<String, Object>> tables = rows(c, """
+                        SELECT relname AS "table", n_live_tup AS rows, pg_total_relation_size(relid) / 1024 AS "sizeKb", seq_scan AS "seqScans",
+                               coalesce(idx_scan, 0) AS "idxScans", n_tup_ins + n_tup_upd + n_tup_del AS writes, n_dead_tup AS "deadRows"
+                          FROM pg_stat_user_tables ORDER BY pg_total_relation_size(relid) DESC LIMIT 30""");
+                for (Map<String, Object> t : tables) {
+                    long rows = num(t.get("rows")), seq = num(t.get("seqScans")), idx = num(t.get("idxScans")), dead = num(t.get("deadRows"));
+                    if (rows >= 5000 && seq > 50 && seq > idx) t.put("hint", "Mostly read by full scans: check the queries' filters have an index");
+                    else if (dead > 1000 && dead > rows / 5) t.put("hint", "Many dead rows: vacuum is behind");
+                }
+                d.put("tables", tables);
             }
-            d.put("tables", tables);
 
             long conns = num(d.get("connections")), max = num(d.get("maxConnections"));
             if (max > 0 && conns * 100 / max >= 85) reasons.add(conns + " of " + max + " connections in use");
@@ -327,7 +348,7 @@ public abstract class DbProbe implements AutoCloseable {
                 maxConn = num(r.getOrDefault("Value", r.get("VARIABLE_VALUE")));
             long reqs = st.getOrDefault("Innodb_buffer_pool_read_requests", 0L), reads = st.getOrDefault("Innodb_buffer_pool_reads", 0L);
             double hit = reqs == 0 ? 100 : round1(100.0 * (reqs - reads) / reqs);
-            d.put("sizeMb", num(row(c, "SELECT coalesce(sum(data_length + index_length), 0) DIV 1048576 AS mb FROM information_schema.TABLES WHERE table_schema = DATABASE()").get("mb")));
+            if (heavy) d.put("sizeMb", num(row(c, "SELECT coalesce(sum(data_length + index_length), 0) DIV 1048576 AS mb FROM information_schema.TABLES WHERE table_schema = DATABASE()").get("mb")));
             d.put("connections", st.getOrDefault("Threads_connected", 0L));
             d.put("maxConnections", maxConn);
             d.put("threadsRunning", st.getOrDefault("Threads_running", 0L));
@@ -361,36 +382,38 @@ public abstract class DbProbe implements AutoCloseable {
             maskQueries(running);
             d.put("running", running);
 
-            Map<String, Object> stm = new LinkedHashMap<>();
-            try {
-                // timers are in picoseconds
-                List<Map<String, Object>> top = rows(c, """
-                        SELECT DIGEST_TEXT AS query, COUNT_STAR AS calls, ROUND(SUM_TIMER_WAIT / 1e9, 1) AS totalMs, ROUND(AVG_TIMER_WAIT / 1e9, 1) AS meanMs,
-                               ROUND(MAX_TIMER_WAIT / 1e9, 1) AS maxMs, SUM_ROWS_SENT + SUM_ROWS_AFFECTED AS `rows`,
-                               ROUND(100 * SUM_TIMER_WAIT / NULLIF((SELECT SUM(SUM_TIMER_WAIT) FROM performance_schema.events_statements_summary_by_digest WHERE SCHEMA_NAME = DATABASE()), 0), 1) AS pct
-                          FROM performance_schema.events_statements_summary_by_digest
-                         WHERE SCHEMA_NAME = DATABASE() AND DIGEST_TEXT IS NOT NULL
-                         ORDER BY SUM_TIMER_WAIT DESC LIMIT 30""");
-                maskQueries(top);
-                stm.put("available", true);
-                stm.put("rows", top);
-            } catch (SQLException e) {
-                stm.put("available", false);
-                stm.put("note", "Statement statistics are not available: turn on performance_schema and grant SELECT on performance_schema.* to the monitoring user.");
-                stm.put("rows", List.of());
-            }
-            d.put("statements", stm);
+            if (heavy) {
+                Map<String, Object> stm = new LinkedHashMap<>();
+                try {
+                    // timers are in picoseconds
+                    List<Map<String, Object>> top = rows(c, """
+                            SELECT DIGEST_TEXT AS query, COUNT_STAR AS calls, ROUND(SUM_TIMER_WAIT / 1e9, 1) AS totalMs, ROUND(AVG_TIMER_WAIT / 1e9, 1) AS meanMs,
+                                   ROUND(MAX_TIMER_WAIT / 1e9, 1) AS maxMs, SUM_ROWS_SENT + SUM_ROWS_AFFECTED AS `rows`,
+                                   ROUND(100 * SUM_TIMER_WAIT / NULLIF((SELECT SUM(SUM_TIMER_WAIT) FROM performance_schema.events_statements_summary_by_digest WHERE SCHEMA_NAME = DATABASE()), 0), 1) AS pct
+                              FROM performance_schema.events_statements_summary_by_digest
+                             WHERE SCHEMA_NAME = DATABASE() AND DIGEST_TEXT IS NOT NULL
+                             ORDER BY SUM_TIMER_WAIT DESC LIMIT 30""");
+                    maskQueries(top);
+                    stm.put("available", true);
+                    stm.put("rows", top);
+                } catch (SQLException e) {
+                    stm.put("available", false);
+                    stm.put("note", "Statement statistics are not available: turn on performance_schema and grant SELECT on performance_schema.* to the monitoring user.");
+                    stm.put("rows", List.of());
+                }
+                d.put("statements", stm);
 
-            List<Map<String, Object>> tables = rows(c, """
-                    SELECT TABLE_NAME AS `table`, TABLE_ROWS AS `rows`, (DATA_LENGTH + INDEX_LENGTH) DIV 1024 AS sizeKb, DATA_FREE DIV 1024 AS freeKb, ENGINE AS engine
-                      FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_TYPE = 'BASE TABLE'
-                     ORDER BY DATA_LENGTH + INDEX_LENGTH DESC LIMIT 30""");
-            for (Map<String, Object> t : tables) {
-                long size = num(t.get("sizeKb")), free = num(t.get("freeKb"));
-                if (size > 100_000 && free > size / 2) t.put("hint", "Much unused space: OPTIMIZE TABLE may reclaim it");
-                if (!"InnoDB".equalsIgnoreCase(String.valueOf(t.get("engine")))) t.put("hint", "Not InnoDB: no row-level locking or crash safety");
+                List<Map<String, Object>> tables = rows(c, """
+                        SELECT TABLE_NAME AS `table`, TABLE_ROWS AS `rows`, (DATA_LENGTH + INDEX_LENGTH) DIV 1024 AS sizeKb, DATA_FREE DIV 1024 AS freeKb, ENGINE AS engine
+                          FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_TYPE = 'BASE TABLE'
+                         ORDER BY DATA_LENGTH + INDEX_LENGTH DESC LIMIT 30""");
+                for (Map<String, Object> t : tables) {
+                    long size = num(t.get("sizeKb")), free = num(t.get("freeKb"));
+                    if (size > 100_000 && free > size / 2) t.put("hint", "Much unused space: OPTIMIZE TABLE may reclaim it");
+                    if (!"InnoDB".equalsIgnoreCase(String.valueOf(t.get("engine")))) t.put("hint", "Not InnoDB: no row-level locking or crash safety");
+                }
+                d.put("tables", tables);
             }
-            d.put("tables", tables);
 
             long conns = num(d.get("connections"));
             if (maxConn > 0 && conns * 100 / maxConn >= 85) reasons.add(conns + " of " + maxConn + " connections in use");

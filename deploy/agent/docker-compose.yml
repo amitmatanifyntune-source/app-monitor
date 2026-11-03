@@ -11,10 +11,11 @@ services:
     network_mode: host          # sees the host's ports and 127.0.0.1 services; no ports are published
     pid: host                   # sees the host's processes (php-fpm, nginx, java, ...)
     read_only: true
+    cpus: 0.5                   # never more than half a core, whatever happens
     cap_drop: [ALL]
     cap_add: [DAC_READ_SEARCH]  # read log files whatever their owner; it cannot write to them
     security_opt: ["no-new-privileges:true"]
-    mem_limit: 256m
+    mem_limit: 192m             # measured peak about 80 MB at 200 spans/s
     tmpfs: [/tmp]
     volumes:
       - ./agent.json:/etc/fyntune-agent/agent.json:ro

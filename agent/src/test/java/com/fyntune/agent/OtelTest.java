@@ -92,7 +92,7 @@ class OtelTest {
                     "startTimeUnixNano":"%d","endTimeUnixNano":"%d","status":{"code":2,"message":"failed"},
                     "attributes":[{"key":"http.request.method","value":{"stringValue":"GET"}},{"key":"http.response.status_code","value":{"intValue":"500"}}]}]}]}]}
                 """.formatted(TRACE, T0, T0 + 150_000_000);
-        List<OtlpDecoder.Span> spans = OtlpDecoder.json(AgentConfig.JSON.readTree(json));
+        List<OtlpDecoder.Span> spans = OtlpDecoder.json(json.getBytes(java.nio.charset.StandardCharsets.UTF_8));
         assertEquals(1, spans.size());
         assertEquals("billing", spans.get(0).service());
         assertEquals(150_000, spans.get(0).durationUs());

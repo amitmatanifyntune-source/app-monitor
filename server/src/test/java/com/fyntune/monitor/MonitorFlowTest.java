@@ -223,4 +223,23 @@ class MonitorFlowTest {
         for (JsonNode d : call(get("/api/apps/traced/dependencies"), admin, null, 200)) other |= d.get("kind").asText().equals("other");
         assertTrue(other);
     }
+
+    @Test
+    void gzipBatchesAreUnpackedAndAnnounced() throws Exception {
+        call(post("/api/admin/apps"), admin, Map.of("code", "zipped", "name", "Zipped"), 200);
+        JsonNode reg = call(post("/api/admin/apps/zipped/agents"), admin, Map.of("name", "z-1"), 200);
+        String id = reg.get("agentId").asText(), key = reg.get("agentKey").asText();
+        String cfg = mvc.perform(get("/ingest/v1/config").header("X-Agent-Id", id).header("X-Agent-Key", key))
+                .andExpect(status().isOk()).andReturn().getResponse().getContentAsString();
+        assertTrue(json.readTree(cfg).get("gzip").asBoolean(), cfg);
+        long minute = System.currentTimeMillis() / 60000 - 1;
+        long[] h = Hist.empty(); h[0] = 7;
+        byte[] body = json.writeValueAsBytes(Map.of("v", 1, "seq", 1, "minutes", List.of(Map.of("minute", minute, "requests", 7, "errors", 0,
+                "refused", 0, "slow", 0, "totalMs", 21, "maxMs", 5, "hist", h))));
+        var bos = new java.io.ByteArrayOutputStream();
+        try (var gz = new java.util.zip.GZIPOutputStream(bos)) { gz.write(body); }
+        mvc.perform(post("/ingest/v1/batch").header("X-Agent-Id", id).header("X-Agent-Key", key).header("Content-Encoding", "gzip")
+                .contentType(MediaType.APPLICATION_JSON).content(bos.toByteArray())).andExpect(status().isOk());
+        assertEquals(7, call(get("/api/apps/zipped/traffic?minutes=5"), admin, null, 200).at("/last5/requests").asLong());
+    }
 }

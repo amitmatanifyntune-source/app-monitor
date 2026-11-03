@@ -62,6 +62,8 @@ Two ways, both bring their own Java 21, so the application's Java (17, 11, none 
   No port is published; the agent only makes outbound HTTPS calls to the monitor.
 - The container is read-only, drops all Linux capabilities except `DAC_READ_SEARCH` (read any log file, write none)
   and has `no-new-privileges`. Its only writable place is the `spool` volume.
+- It is capped at half a CPU core and 192 MB (`cpus`, `mem_limit`); measured use is about 0.7% of a core and 80 MB
+  while taking 200 OpenTelemetry spans a second. The systemd install runs at `Nice=10` with `CPUQuota=50%` and `MemoryMax=256M`.
 - `-XX:-UseContainerSupport` makes Java report the host's CPU and memory instead of the container's.
 - Logs outside `/var/log` and `APP_DIR` need one more line under `volumes:` (same path on both sides, `:ro`).
 - Commands, in this folder: `sudo docker compose logs -f`, `sudo docker compose restart`,

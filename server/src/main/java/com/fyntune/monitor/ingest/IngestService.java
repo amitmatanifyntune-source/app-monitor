@@ -152,6 +152,8 @@ public class IngestService {
         out.put("mask", readList((String) app.get("mask")));
         out.put("routeRules", readList((String) app.get("rules")));
         out.put("checks", checks);
+        // agents 0.2+ compress batches only when the server says it can unpack them (GzipRequestFilter)
+        out.put("gzip", true);
         return out;
     }
 

@@ -50,7 +50,7 @@ public final class OtlpReceiver {
             if (!"POST".equals(ex.getRequestMethod())) { reply(ex, 405, json, "{\"error\":\"POST only\"}"); return; }
             byte[] body = read(ex);
             if (body == null) { reply(ex, 413, json, "{\"error\":\"over 8 MB\"}"); return; }
-            List<OtlpDecoder.Span> spans = json ? OtlpDecoder.json(AgentConfig.JSON.readTree(body)) : OtlpDecoder.protobuf(body);
+            List<OtlpDecoder.Span> spans = json ? OtlpDecoder.json(body) : OtlpDecoder.protobuf(body);
             int taken = tracer.accept(spans, System.currentTimeMillis());
             int rejected = spans.size() - taken;
             // ExportTraceServiceResponse: empty means all accepted; a partial_success tells the SDK what was dropped

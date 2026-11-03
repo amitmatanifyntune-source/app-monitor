@@ -18,6 +18,10 @@ import java.util.regex.Pattern;
  */
 public final class Tracer {
     static final int MAX_DEP_KEYS_PER_MINUTE = 300, MAX_SPANS_PER_TRACE = 300, MAX_PENDING_TRACES = 2000;
+    /** Spans held at once across all unfinished traces: the memory ceiling of the trace buffer (roughly 10–20 MB). */
+    static final int MAX_PENDING_SPANS = 20_000;
+    /** Trace ids already decided against, so their late spans are not buffered again. */
+    static final int MAX_DECIDED = 10_000;
     /** A trace is complete this long after its last span once its root has arrived, or this long after its first span. */
     static final long QUIET_MS = 3_000, MAX_WAIT_MS = 30_000;
 
@@ -35,7 +39,7 @@ public final class Tracer {
         final List<OtlpDecoder.Span> spans = new ArrayList<>();
         final long firstAt;
         long lastAt;
-        boolean root;
+        boolean root, error;
         Pending(long now) { firstAt = now; lastAt = now; }
     }
 
@@ -46,6 +50,10 @@ public final class Tracer {
 
     private final Map<Long, Map<String, Dep>> deps = new TreeMap<>();
     private final LinkedHashMap<String, Pending> pending = new LinkedHashMap<>();
+    private int pendingSpans;
+    private final LinkedHashMap<String, Boolean> decided = new LinkedHashMap<>(256, 0.75f, false) {
+        @Override protected boolean removeEldestEntry(Map.Entry<String, Boolean> e) { return size() > MAX_DECIDED; }
+    };
     private final List<Map<String, Object>> kept = new ArrayList<>();
 
     private long spanMinute, spansThisMinute, keptMinute;
@@ -65,10 +73,15 @@ public final class Tracer {
 
     // ------------------------------------------------------------------ intake
 
-    /** Spans from one export. Returns how many were taken (the rest were over the limit). */
+    /**
+     * Spans from one export. Every client span is counted in the dependencies; spans are buffered for a trace only until
+     * its root arrives, and then only if the trace will be kept (failed, slow, or sampled with room left this minute).
+     * Most traces are therefore let go at once instead of waiting in memory. Returns how many spans were taken.
+     */
     public synchronized int accept(List<OtlpDecoder.Span> spans, long now) {
         long minute = now / 60_000;
         if (minute != spanMinute) { spanMinute = minute; spansThisMinute = 0; }
+        rollKeptMinute(now);
         int taken = 0;
         for (OtlpDecoder.Span s : spans) {
             received++;
@@ -76,22 +89,57 @@ public final class Tracer {
             spansThisMinute++;
             taken++;
             dependency(s);
+            if (decided.containsKey(s.traceId())) continue;   // a late span of a trace already let go
             Pending p = pending.get(s.traceId());
             if (p == null) {
-                if (pending.size() >= MAX_PENDING_TRACES) {   // the oldest one gives way
-                    var it = pending.entrySet().iterator();
-                    dropped += it.next().getValue().spans.size();
-                    tracesDropped++;
-                    it.remove();
-                }
+                if (pending.size() >= MAX_PENDING_TRACES) evictOldest();
                 p = new Pending(now);
                 pending.put(s.traceId(), p);
             }
-            if (p.spans.size() < MAX_SPANS_PER_TRACE * 2) p.spans.add(s); else dropped++;
+            if (p.spans.size() < MAX_SPANS_PER_TRACE) { p.spans.add(s); pendingSpans++; } else dropped++;
             p.lastAt = now;
-            if (s.parentId() == null || s.kind() == OtlpDecoder.SERVER || s.kind() == OtlpDecoder.CONSUMER) p.root = true;
+            if (failed(s)) p.error = true;
+            boolean isRoot = s.parentId() == null || s.kind() == OtlpDecoder.SERVER || s.kind() == OtlpDecoder.CONSUMER;
+            if (isRoot) {
+                p.root = true;
+                boolean slow = s.durationUs() / 1000 >= agg.slowMs();
+                if (!worthKeeping(s.traceId(), p.error, slow)) {
+                    // a failed, slow or sampled trace over this minute's limit is counted as dropped; an ordinary one is just not kept
+                    if (p.error || slow || sampled(s.traceId(), settings.sampleRatio())) tracesDropped++;
+                    letGo(s.traceId(), p);
+                }
+            }
+            while (pendingSpans > MAX_PENDING_SPANS && !pending.isEmpty()) evictOldest();
         }
         return taken;
+    }
+
+    /** Whether a trace could still be kept, given the limits already used this minute. */
+    private boolean worthKeeping(String traceId, boolean error, boolean slow) {
+        int max = settings.maxTracesPerMinute();
+        if (error || slow) return errorSlowKept < max;
+        return sampled(traceId, settings.sampleRatio()) && sampledKept < Math.max(1, max / 3);
+    }
+
+    private void letGo(String traceId, Pending p) {
+        pending.remove(traceId);
+        pendingSpans -= p.spans.size();
+        decided.put(traceId, Boolean.TRUE);
+    }
+
+    private void evictOldest() {
+        var it = pending.entrySet().iterator();
+        var e = it.next();
+        pendingSpans -= e.getValue().spans.size();
+        dropped += e.getValue().spans.size();
+        tracesDropped++;
+        decided.put(e.getKey(), Boolean.TRUE);
+        it.remove();
+    }
+
+    private void rollKeptMinute(long now) {
+        long minute = now / 60_000;
+        if (minute != keptMinute) { keptMinute = minute; errorSlowKept = 0; sampledKept = 0; }
     }
 
     /** Finishes traces that are complete; called every couple of seconds. */
@@ -101,6 +149,8 @@ public final class Tracer {
             Pending p = e.getValue();
             if ((p.root && now - p.lastAt >= QUIET_MS) || now - p.firstAt >= MAX_WAIT_MS) {
                 it.remove();
+                pendingSpans -= p.spans.size();
+                decided.put(e.getKey(), Boolean.TRUE);
                 finish(e.getKey(), p.spans, now);
             }
         }
@@ -202,8 +252,7 @@ public final class Tracer {
         boolean slow = durMs >= agg.slowMs();
         boolean sampled = sampled(traceId, settings.sampleRatio());
 
-        long minute = now / 60_000;
-        if (minute != keptMinute) { keptMinute = minute; errorSlowKept = 0; sampledKept = 0; }
+        rollKeptMinute(now);
         int max = settings.maxTracesPerMinute();
         String reason;
         if ((error || slow) && errorSlowKept < max) { errorSlowKept++; reason = error ? "error" : "slow"; }
@@ -260,6 +309,7 @@ public final class Tracer {
         m.put("tracesKept", tracesKept);
         m.put("tracesDropped", tracesDropped);
         m.put("tracesPending", pending.size());
+        m.put("spansPending", pendingSpans);
         received = dropped = tracesKept = tracesDropped = 0;
         return m;
     }
@@ -306,6 +356,7 @@ public final class Tracer {
     static String sqlSummary(OtlpDecoder.Span s) {
         Map<String, Object> a = s.attrs();
         String stmt = str(a.get("db.query.text"), a.get("db.statement"));
+        if (stmt != null && stmt.length() > 400) stmt = stmt.substring(0, 400);   // the verb and first table are near the start
         String op = str(a.get("db.operation.name"), a.get("db.operation"));
         String table = str(a.get("db.collection.name"), a.get("db.sql.table"));
         if (stmt != null && (op == null || table == null)) {

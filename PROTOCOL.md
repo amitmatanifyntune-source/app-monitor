@@ -98,9 +98,12 @@ Present only when the agent received OpenTelemetry spans (see the OTLP section b
   (1 internal, 2 server, 3 client, 4 producer, 5 consumer). Times are relative to the trace start, in microseconds.
 - `hostStats.agent` is what the agent itself costs the server: `cpu` (share of the machine, 0–1), `rssMb`, `heapUsedMb`,
   `heapMaxMb`, `threads`, `uptimeSec`, `spoolKb`, `otlp` (receiver listening), and since the previous batch `spansReceived`,
-  `spansDropped`, `tracesKept`, `tracesDropped`, `tracesPending`.
+  `spansDropped`, `tracesKept`, `tracesDropped`, `tracesPending`, `spansPending`.
 
 Reply: `200 {"accepted": true, "seq": 42}`, or `{"accepted": false, "seq": <last stored>}` for a duplicate.
+
+Compression: when `GET /ingest/v1/config` answers `"gzip": true` (server 0.2+), agents send the batch with
+`Content-Encoding: gzip`. The server unpacks at most 64 MB. Older servers do not send the flag and get plain JSON.
 
 ## `GET /ingest/v1/config`
 The agent pulls its remote settings every 5 minutes:
@@ -146,6 +149,8 @@ gzip. `/v1/metrics` and `/v1/logs` are accepted and ignored. The port and limits
 
 - Every client or producer span (and any span with `db.system` or `messaging.system`) is counted in `deps` by kind, target and
   operation.
+- When a trace's root span arrives and the trace will not be kept (not failed, not slow, not sampled, or over this
+  minute's limit), its spans are let go at once and its later spans are ignored; at most 20,000 spans wait in memory.
 - Spans are grouped by trace; a trace is complete 3 s after its last span once its root has arrived (30 s at most). Failed
   and slow traces are kept up to `maxTracesPerMinute`; others by `sampleRatio`, decided from the trace id (the same on every
   agent), up to a third of that limit.

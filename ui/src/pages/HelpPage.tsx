@@ -132,13 +132,13 @@ sudo systemctl daemon-reload && sudo systemctl enable --now fyntune-agent
 journalctl -u fyntune-agent -f                     # its own log`}</Code>
           <h4>Windows</h4>
           <p>Run it as a service with a service wrapper the client already uses (e.g. NSSM or WinSW), with the command:</p>
-          <Code>{`"C:\\Program Files\\Java\\jdk-21\\bin\\java.exe" -Xmx128m -jar C:\\fyntune-agent\\fyntune-agent.jar C:\\fyntune-agent\\agent.json`}</Code>
+          <Code>{`"C:\\Program Files\\Java\\jdk-21\\bin\\java.exe" -Xms16m -Xmx128m -XX:+UseSerialGC -XX:TieredStopAtLevel=1 -XX:MaxMetaspaceSize=64m -XX:ReservedCodeCacheSize=32m -Xss512k -XX:+ExitOnOutOfMemoryError -jar C:\\fyntune-agent\\fyntune-agent.jar C:\\fyntune-agent\\agent.json`}</Code>
           <h4>Docker</h4>
           <Code>{`docker run -d --name fyntune-agent --restart unless-stopped \\
   -v /opt/fyntune-agent:/opt/fyntune-agent \\
   -v /var/log/nginx:/var/log/nginx:ro -v /var/www/app/storage/logs:/var/www/app/storage/logs:ro \\
   --network host eclipse-temurin:21-jre \\
-  java -Xmx128m -jar /opt/fyntune-agent/fyntune-agent.jar /opt/fyntune-agent/agent.json`}</Code>
+  java -Xms16m -Xmx128m -XX:+UseSerialGC -XX:TieredStopAtLevel=1 -XX:MaxMetaspaceSize=64m -XX:ReservedCodeCacheSize=32m -Xss512k -XX:+ExitOnOutOfMemoryError -jar /opt/fyntune-agent/fyntune-agent.jar /opt/fyntune-agent/agent.json`}</Code>
           <p>Within about a minute the agent shows <span className="badge good">reporting</span> in Setup → Agents, and the app's status changes from <i>No data yet</i>.</p>
         </Section>
 
@@ -201,7 +201,9 @@ env[OTEL_TRACES_SAMPLER_ARG] = 1.0        # 0.25 = record a quarter of requests`
           <p>Every agent reports its own CPU, memory, Java heap, threads and spool size, and how many OpenTelemetry spans it handled. They are shown on the
             <b> Servers</b> tab under <i>Monitoring agent overhead</i>, next to the app's figures, so the client can see the cost.</p>
           <table className="help-t"><tbody>
-            <tr><td><b>Agent</b></td><td>Typically 30–100 MB of memory and well under 1% CPU. Java heap is capped at 128 MB; the Docker container at 256 MB. One batch a minute, a few KB.</td></tr>
+            <tr><td><b>Agent</b></td><td>Measured on a test machine: idle about 30–45 MB and near 0% CPU; while taking 200 OpenTelemetry spans a second, about 0.7% of one core and 80 MB at peak.
+              It runs at low priority and is capped at half a core and 256 MB (192 MB in Docker). One gzip-compressed batch a minute, usually a few KB.</td></tr>
+            <tr><td><b>Database</b></td><td>Connections, locks and running queries each minute; the heavier reads (size, top statements, largest tables) every 10 minutes, each with a 10 s timeout.</td></tr>
             <tr><td><b>OpenTelemetry in a PHP app</b></td><td>Roughly 1–5 ms per request and a few MB per PHP-FPM worker; more with many queries per request. Lower it with
               <span className="mono"> OTEL_TRACES_SAMPLER_ARG</span>; turn it off with <span className="mono">OTEL_SDK_DISABLED=true</span>.</td></tr>
             <tr><td><b>OpenTelemetry Java agent</b></td><td>A few seconds more at start-up, roughly 50–100 MB more memory and a few % CPU under load.</td></tr>

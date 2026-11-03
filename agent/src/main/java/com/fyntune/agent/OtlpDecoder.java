@@ -1,6 +1,8 @@
 package com.fyntune.agent;
 
-import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.core.JsonFactory;
+import com.fasterxml.jackson.core.JsonParser;
+import com.fasterxml.jackson.core.JsonToken;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
@@ -23,7 +25,26 @@ public final class OtlpDecoder {
 
     /** SpanKind: 1 internal, 2 server, 3 client, 4 producer, 5 consumer. */
     static final int INTERNAL = 1, SERVER = 2, CLIENT = 3, PRODUCER = 4, CONSUMER = 5;
-    static final int MAX_ATTRS = 64, MAX_STRING = 2000;
+    static final int MAX_ATTRS = 32, MAX_STRING = 2000;
+
+    /**
+     * The only attributes the monitor uses. Everything else (user agents, client addresses, thread names, headers…) is
+     * skipped without being decoded, which saves most of the parsing and memory.
+     */
+    static final Set<String> WANTED = Set.of(
+            "service.name",
+            "http.request.method", "http.method", "http.route", "url.path", "http.target", "url.full", "http.url",
+            "http.response.status_code", "http.status_code", "server.address", "server.port", "net.peer.name", "net.peer.port",
+            "db.system", "db.system.name", "db.namespace", "db.name", "db.operation.name", "db.operation", "db.query.text", "db.statement",
+            "db.collection.name", "db.sql.table",
+            "messaging.system", "messaging.destination.name", "messaging.destination", "messaging.operation.type", "messaging.operation",
+            "exception.type", "exception.message", "error.type", "code.function", "code.namespace", "rpc.system", "rpc.service", "rpc.method");
+
+    static boolean wanted(String key) {
+        if (WANTED.contains(key)) return true;
+        String k = key.toLowerCase(Locale.ROOT);
+        return k.endsWith("x_request_id") || k.endsWith("x-request-id") || k.equals("request_id") || k.equals("requestid");
+    }
 
     private OtlpDecoder() {}
 
@@ -101,11 +122,14 @@ public final class OtlpDecoder {
         Object value = null;
         while (r.more()) {
             int tag = r.tag();
-            if (tag >>> 3 == 1 && (tag & 7) == 2) key = r.string();
-            else if (tag >>> 3 == 2 && (tag & 7) == 2) value = anyValue(r.sub());
-            else r.skip(tag);
+            if (tag >>> 3 == 1 && (tag & 7) == 2) {
+                key = r.string();
+                if (!wanted(key)) return;   // the value is never read
+            } else if (tag >>> 3 == 2 && (tag & 7) == 2) {
+                value = anyValue(r.sub());   // a value before its key (unusual) is decoded and checked below
+            } else r.skip(tag);
         }
-        if (key != null && value != null) into.put(key, value);
+        if (key != null && value != null && wanted(key)) into.put(key, value);
     }
 
     private static Object anyValue(Reader r) throws IOException {
@@ -193,41 +217,135 @@ public final class OtlpDecoder {
 
     // ================================================================== JSON
 
-    /** OTLP/JSON: ids are hex strings, times are decimal strings, kind and status code are numbers. */
-    public static List<Span> json(JsonNode root) {
+    private static final JsonFactory JSON = new JsonFactory();
+
+    /**
+     * OTLP/JSON, read as a stream: ids are hex strings, times decimal strings, kind and status code numbers (or their
+     * enum names). Attributes the monitor does not use are skipped without being built, so no full tree is held.
+     */
+    public static List<Span> json(byte[] body) throws IOException {
         List<Span> out = new ArrayList<>();
-        for (JsonNode rs : root.path("resourceSpans")) {
-            Map<String, Object> resource = jsonAttrs(rs.path("resource").path("attributes"));
-            String service = str(resource.get("service.name"));
-            for (JsonNode ss : rs.path("scopeSpans"))
-                for (JsonNode s : ss.path("spans")) {
-                    String parent = s.path("parentSpanId").asText("");
-                    out.add(new Span(s.path("traceId").asText("").toLowerCase(Locale.ROOT), s.path("spanId").asText("").toLowerCase(Locale.ROOT),
-                            parent.isEmpty() ? null : parent.toLowerCase(Locale.ROOT), s.path("name").asText(""), kind(s.path("kind")),
-                            nanos(s.path("startTimeUnixNano")), nanos(s.path("endTimeUnixNano")), jsonAttrs(s.path("attributes")),
-                            statusCode(s.path("status").path("code")), s.path("status").path("message").asText(null), service));
-                }
+        try (JsonParser p = JSON.createParser(body)) {
+            if (p.nextToken() != JsonToken.START_OBJECT) throw new IOException("not a JSON object");
+            while (p.nextToken() == JsonToken.FIELD_NAME) {
+                String f = p.currentName();
+                JsonToken t = p.nextToken();
+                if ("resourceSpans".equals(f) && t == JsonToken.START_ARRAY) {
+                    while (p.nextToken() == JsonToken.START_OBJECT) jsonResourceSpans(p, out);
+                } else p.skipChildren();
+            }
         }
         return out;
     }
 
-    private static Map<String, Object> jsonAttrs(JsonNode list) {
-        Map<String, Object> m = new LinkedHashMap<>();
-        for (JsonNode kv : list) {
-            if (m.size() >= MAX_ATTRS) break;
-            JsonNode v = kv.path("value");
-            Object o = v.has("stringValue") ? cut(v.get("stringValue").asText())
-                    : v.has("intValue") ? (Object) v.get("intValue").asLong()
-                    : v.has("doubleValue") ? (Object) v.get("doubleValue").asDouble()
-                    : v.has("boolValue") ? (Object) v.get("boolValue").asBoolean() : null;
-            if (o != null && kv.has("key")) m.put(kv.get("key").asText(), o);
+    /** A span read before its resource's service.name is known (JSON objects have no field order). */
+    private record Raw(String traceId, String spanId, String parentId, String name, int kind, long startNs, long endNs,
+                       Map<String, Object> attrs, int statusCode, String statusMessage) {}
+
+    private static void jsonResourceSpans(JsonParser p, List<Span> out) throws IOException {
+        Map<String, Object> resource = new HashMap<>();
+        List<Raw> raw = new ArrayList<>();
+        while (p.nextToken() == JsonToken.FIELD_NAME) {
+            String f = p.currentName();
+            JsonToken t = p.nextToken();
+            if ("resource".equals(f) && t == JsonToken.START_OBJECT) {
+                while (p.nextToken() == JsonToken.FIELD_NAME) {
+                    String g = p.currentName();
+                    JsonToken u = p.nextToken();
+                    if ("attributes".equals(g) && u == JsonToken.START_ARRAY) jsonAttrs(p, resource);
+                    else p.skipChildren();
+                }
+            } else if ("scopeSpans".equals(f) && t == JsonToken.START_ARRAY) {
+                while (p.nextToken() == JsonToken.START_OBJECT)
+                    while (p.nextToken() == JsonToken.FIELD_NAME) {
+                        String g = p.currentName();
+                        JsonToken u = p.nextToken();
+                        if ("spans".equals(g) && u == JsonToken.START_ARRAY) {
+                            while (p.nextToken() == JsonToken.START_OBJECT) raw.add(jsonSpan(p));
+                        } else p.skipChildren();
+                    }
+            } else p.skipChildren();
         }
-        return m;
+        String service = str(resource.get("service.name"));
+        for (Raw r : raw)
+            out.add(new Span(r.traceId(), r.spanId(), r.parentId(), r.name(), r.kind(), r.startNs(), r.endNs(), r.attrs(), r.statusCode(), r.statusMessage(), service));
     }
 
-    private static int kind(JsonNode n) {
-        if (n.isNumber()) return n.asInt();
-        return switch (n.asText("")) {
+    private static Raw jsonSpan(JsonParser p) throws IOException {
+        String trace = "", id = "", parent = null, name = "", msg = null;
+        int kind = 0, code = 0;
+        long start = 0, end = 0;
+        Map<String, Object> attrs = new LinkedHashMap<>();
+        while (p.nextToken() == JsonToken.FIELD_NAME) {
+            String f = p.currentName();
+            JsonToken t = p.nextToken();
+            switch (f) {
+                case "traceId" -> trace = p.getValueAsString("").toLowerCase(Locale.ROOT);
+                case "spanId" -> id = p.getValueAsString("").toLowerCase(Locale.ROOT);
+                case "parentSpanId" -> { String v = p.getValueAsString(""); parent = v.isEmpty() ? null : v.toLowerCase(Locale.ROOT); }
+                case "name" -> name = p.getValueAsString("");
+                case "kind" -> kind = t == JsonToken.VALUE_NUMBER_INT ? p.getIntValue() : kindOf(p.getValueAsString(""));
+                case "startTimeUnixNano" -> start = nanos(p, t);
+                case "endTimeUnixNano" -> end = nanos(p, t);
+                case "attributes" -> { if (t == JsonToken.START_ARRAY) jsonAttrs(p, attrs); else p.skipChildren(); }
+                case "status" -> {
+                    if (t != JsonToken.START_OBJECT) { p.skipChildren(); break; }
+                    while (p.nextToken() == JsonToken.FIELD_NAME) {
+                        String g = p.currentName();
+                        JsonToken u = p.nextToken();
+                        if ("code".equals(g)) code = u == JsonToken.VALUE_NUMBER_INT ? p.getIntValue() : statusOf(p.getValueAsString(""));
+                        else if ("message".equals(g)) msg = p.getValueAsString(null);
+                        else p.skipChildren();
+                    }
+                }
+                default -> p.skipChildren();
+            }
+        }
+        return new Raw(trace, id, parent, name, kind, start, end, attrs, code, msg);
+    }
+
+    /** [{"key": …, "value": {"stringValue": …}}, …]: only wanted keys are kept. */
+    private static void jsonAttrs(JsonParser p, Map<String, Object> into) throws IOException {
+        while (p.nextToken() == JsonToken.START_OBJECT) {
+            String key = null;
+            Object v = null;
+            while (p.nextToken() == JsonToken.FIELD_NAME) {
+                String f = p.currentName();
+                p.nextToken();
+                if ("key".equals(f)) key = p.getValueAsString(null);
+                else if ("value".equals(f) && p.currentToken() == JsonToken.START_OBJECT && (key == null || wanted(key))) v = jsonAnyValue(p);
+                else p.skipChildren();
+            }
+            if (key != null && v != null && into.size() < MAX_ATTRS && wanted(key)) into.put(key, v);
+        }
+    }
+
+    private static Object jsonAnyValue(JsonParser p) throws IOException {
+        Object v = null;
+        while (p.nextToken() == JsonToken.FIELD_NAME) {
+            String f = p.currentName();
+            JsonToken t = p.nextToken();
+            switch (f) {
+                case "stringValue" -> v = cut(p.getValueAsString(""));
+                case "intValue" -> v = t == JsonToken.VALUE_NUMBER_INT ? p.getLongValue() : parseLong(p.getValueAsString("0"));
+                case "doubleValue" -> v = p.getValueAsDouble();
+                case "boolValue" -> v = p.getValueAsBoolean();
+                default -> p.skipChildren();
+            }
+        }
+        return v;
+    }
+
+    private static long nanos(JsonParser p, JsonToken t) throws IOException {
+        return t == JsonToken.VALUE_NUMBER_INT ? p.getLongValue() : parseLong(p.getValueAsString("0"));
+    }
+
+    private static long parseLong(String s) {
+        try { return Long.parseLong(s); } catch (NumberFormatException e) { return 0; }
+    }
+
+    private static int kindOf(String s) {
+        return switch (s) {
             case "SPAN_KIND_INTERNAL" -> INTERNAL;
             case "SPAN_KIND_SERVER" -> SERVER;
             case "SPAN_KIND_CLIENT" -> CLIENT;
@@ -237,13 +355,8 @@ public final class OtlpDecoder {
         };
     }
 
-    private static int statusCode(JsonNode n) {
-        if (n.isNumber()) return n.asInt();
-        return switch (n.asText("")) { case "STATUS_CODE_OK" -> 1; case "STATUS_CODE_ERROR" -> 2; default -> 0; };
-    }
-
-    private static long nanos(JsonNode n) {
-        try { return n.isNumber() ? n.asLong() : Long.parseLong(n.asText("0")); } catch (NumberFormatException e) { return 0; }
+    private static int statusOf(String s) {
+        return switch (s) { case "STATUS_CODE_OK" -> 1; case "STATUS_CODE_ERROR" -> 2; default -> 0; };
     }
 
     // ================================================================== helpers
