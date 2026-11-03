@@ -11,6 +11,8 @@ import java.util.concurrent.atomic.AtomicInteger;
 public final class Aggregator {
     /** Events kept between batches; past this they are only counted. */
     static final int MAX_EVENTS = 1000;
+    /** Distinct endpoints per minute; past this (scanners trying random URLs) they are counted together as "(other paths)". */
+    static final int MAX_ENDPOINTS_PER_MINUTE = 2000;
 
     private static final class Bucket {
         final Hist h = new Hist();
@@ -39,7 +41,9 @@ public final class Aggregator {
         String type = status >= 500 ? "ERROR" : status >= 400 && status != 401 && status != 403 && status != 404 ? "REFUSED" : ms >= slowMs ? "SLOW" : null;
         synchronized (this) {
             Bucket b = minutes.computeIfAbsent(minute, k -> new Bucket());
-            Bucket e = endpoints.computeIfAbsent(minute, k -> new HashMap<>()).computeIfAbsent(key, k -> new Bucket());
+            Map<String, Bucket> perMinute = endpoints.computeIfAbsent(minute, k -> new HashMap<>());
+            String k2 = perMinute.containsKey(key) || perMinute.size() < MAX_ENDPOINTS_PER_MINUTE ? key : method + " (other paths)";
+            Bucket e = perMinute.computeIfAbsent(k2, k -> new Bucket());
             for (Bucket x : new Bucket[]{b, e}) {
                 x.h.add(ms);
                 if (status >= 500) x.errors++;

@@ -5,20 +5,58 @@
     "agentKey": "REPLACE_WITH_KEY_FROM_SETUP"
   },
   "spoolDir": "/data",
-
-  "accessLogs": [ { "path": "/var/log/nginx/access.log", "format": "nginx" } ],
-  "appLogs": [ { "path": "/var/www/app/storage/logs/laravel.log" } ],
-
-  "db": { "engine": "mysql", "url": "jdbc:mysql://127.0.0.1:3306/appdb", "user": "monitor", "password": "REPLACE" },
-  "allowServerSqlChecks": false,
-
-  "host": {
-    "disks": ["/host", "/host/var/www"],
-    "processes": [
-      { "name": "php-fpm", "match": "php-fpm: master" },
-      { "name": "nginx", "match": "nginx: master" }
-    ],
-    "ports": [ { "name": "HTTPS", "port": 443 }, { "name": "MySQL", "port": 3306 } ]
+  "accessLogs": [
+    {
+      "path": "/var/log/nginx/access.log",
+      "format": "nginx"
+    }
+  ],
+  "appLogs": [
+    {
+      "path": "/var/www/app/storage/logs/laravel.log"
+    }
+  ],
+  "db": {
+    "engine": "mysql",
+    "url": "jdbc:mysql://127.0.0.1:3306/appdb",
+    "user": "monitor",
+    "password": "REPLACE"
   },
-  "localReceiver": { "enabled": true, "port": 7071 }
+  "allowServerSqlChecks": false,
+  "host": {
+    "disks": [
+      "/host",
+      "/host/var/www"
+    ],
+    "processes": [
+      {
+        "name": "php-fpm",
+        "match": "php-fpm: master"
+      },
+      {
+        "name": "nginx",
+        "match": "nginx: master"
+      }
+    ],
+    "ports": [
+      {
+        "name": "HTTPS",
+        "port": 443
+      },
+      {
+        "name": "MySQL",
+        "port": 3306
+      }
+    ]
+  },
+  "localReceiver": {
+    "enabled": true,
+    "port": 7071
+  },
+  "otlp": {
+    "enabled": true,
+    "port": 4318,
+    "sampleRatio": 0.05,
+    "maxTracesPerMinute": 30
+  }
 }

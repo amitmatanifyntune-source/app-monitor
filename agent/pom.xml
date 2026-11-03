@@ -6,7 +6,7 @@
 
   <groupId>com.fyntune</groupId>
   <artifactId>fyntune-agent</artifactId>
-  <version>0.1.1</version>
+  <version>0.2.0</version>
   <name>Fyntune App Monitor agent</name>
   <description>Runs on a monitored app's server: reads access and app logs, runs checks, probes the database read-only,
     and sends the results to the Fyntune App Monitor server. No Spring; Jackson and JDBC drivers only.</description>

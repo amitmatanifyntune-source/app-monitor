@@ -28,7 +28,8 @@ public record AgentConfig(
         Tls tls,
         Integer slowMs,
         List<String> mask,
-        List<Map<String, String>> routeRules) {
+        List<Map<String, String>> routeRules,
+        Otlp otlp) {
 
     /** url: the monitoring server, e.g. https://monitor.example.com. */
     @JsonIgnoreProperties(ignoreUnknown = true)
@@ -61,6 +62,13 @@ public record AgentConfig(
 
     @JsonIgnoreProperties(ignoreUnknown = true)
     public record LocalReceiver(Boolean enabled, Integer port, String token) {}
+
+    /**
+     * OpenTelemetry receiver (OTLP/HTTP on 127.0.0.1). On by default at port 4318. sampleRatio: share of ordinary traces
+     * kept (failed and slow ones are always kept, up to maxTracesPerMinute); maxSpansPerMinute caps what is read at all.
+     */
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public record Otlp(Boolean enabled, Integer port, Double sampleRatio, Integer maxTracesPerMinute, Integer maxSpansPerMinute) {}
 
     /** Optional: a trust store for a private CA, and a key store for mutual TLS. */
     @JsonIgnoreProperties(ignoreUnknown = true)

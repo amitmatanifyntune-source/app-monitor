@@ -51,6 +51,9 @@ public final class Main {
     private final List<AppLogTail> appLogs = new ArrayList<>();
     private final String hostname;
     private LocalReceiver receiver;
+    private final Tracer tracer;
+    private final AgentSelf self;
+    private OtlpReceiver otlp;
 
     private record Tail(FileTailer tailer, AccessLogParser parser) {}
 
@@ -72,6 +75,8 @@ public final class Main {
         this.checks = new Checks(http, cfg.db(), masker);
         this.host = new HostStats(cfg.host());
         this.spec = new ServerSpec(cfg.host());
+        this.tracer = new Tracer(masker, routes, agg, Tracer.Settings.of(cfg.otlp()));
+        this.self = new AgentSelf(Path.of(cfg.spool()));
         String h;
         try { h = InetAddress.getLocalHost().getHostName(); } catch (Exception e) { h = "unknown"; }
         this.hostname = h;
@@ -110,6 +115,16 @@ public final class Main {
             }
         }
 
+        var oc = cfg.otlp();
+        if (oc == null || !Boolean.FALSE.equals(oc.enabled())) {
+            try {
+                otlp = new OtlpReceiver(oc == null || oc.port() == null ? 4318 : oc.port(), tracer);
+                otlp.start();
+            } catch (Exception e) {
+                Log.warn("OpenTelemetry receiver not started (is another collector on the port?): " + e.getMessage());
+            }
+        }
+
         ScheduledExecutorService ex = Executors.newScheduledThreadPool(3, r -> { Thread t = new Thread(r, "agent"); t.setDaemon(false); return t; });
         ex.scheduleWithFixedDelay(guard("read logs", this::readLogs), 0, 1, TimeUnit.SECONDS);
         ex.scheduleWithFixedDelay(guard("checks", checks::tick), 2, 5, TimeUnit.SECONDS);
@@ -119,12 +134,14 @@ public final class Main {
         ex.scheduleWithFixedDelay(guard("retry", () -> { if (transport.pendingCount() > 0) transport.flush(); }), 15, 15, TimeUnit.SECONDS);
         ex.scheduleWithFixedDelay(guard("settings", () -> { RemoteConfig r = transport.pullConfig(); if (r != null) apply(r); }), 300, 300, TimeUnit.SECONDS);
         ex.scheduleWithFixedDelay(guard("state", state::save), 10, 10, TimeUnit.SECONDS);
+        ex.scheduleWithFixedDelay(guard("traces", () -> tracer.tick(System.currentTimeMillis())), 2, 2, TimeUnit.SECONDS);
 
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
             Log.info("Stopping: sending what is collected so far");
             try { sendBatch(Long.MAX_VALUE); } catch (Exception ignored) { }
             state.save();
             if (receiver != null) receiver.stop();
+            if (otlp != null) otlp.stop();
             if (db != null) db.close();
             checks.shutdown();
         }));
@@ -224,7 +241,14 @@ public final class Main {
             DbProbe.Snapshot s = db.snapshot();
             b.put("db", Map.of("at", System.currentTimeMillis(), "engine", s.engine(), "version", s.version() == null ? "" : s.version(), "snapshot", s.data()));
         }
-        b.put("hostStats", host.sample());
+        // finish what is waiting, so a stop does not lose the last traces
+        if (beforeMinute == Long.MAX_VALUE) tracer.tick(Long.MAX_VALUE / 2);
+        List<Map<String, Object>> deps = tracer.drainDependencies(beforeMinute), traces = tracer.drainTraces();
+        if (!deps.isEmpty()) b.put("deps", deps);
+        if (!traces.isEmpty()) b.put("traces", traces);
+        Map<String, Object> hs = host.sample();
+        hs.put("agent", self.sample(tracer.stats(), otlp != null));
+        b.put("hostStats", hs);
         // what the server is changes rarely: send it with the first batch, then hourly
         if (System.currentTimeMillis() - specSentAt >= 3_600_000) {
             b.put("spec", spec.collect());
@@ -238,7 +262,8 @@ public final class Main {
         }
         int sent = transport.flush();
         long reqs = d.minutes().stream().mapToLong(m -> ((Number) m.get("requests")).longValue()).sum();
-        Log.debug("Batch " + seq + ": " + reqs + " requests, " + d.events().size() + " events; sent " + sent + ", waiting " + transport.pendingCount());
+        Log.debug("Batch " + seq + ": " + reqs + " requests, " + d.events().size() + " events, " + deps.size() + " dependency rows, " + traces.size()
+                + " traces; sent " + sent + ", waiting " + transport.pendingCount());
     }
 
     // ================================================================== --test
@@ -288,6 +313,20 @@ public final class Main {
         System.out.println("  ✓ Host: " + h.get("os") + ", " + h.get("cores") + " cores, memory " + h.get("memUsedMb") + "/" + h.get("memTotalMb") + " MB");
         if (h.get("processes") instanceof List<?> ps) for (Object o : ps) if (o instanceof Map<?, ?> p)
             System.out.println((Boolean.TRUE.equals(p.get("up")) ? "  ✓ Process " : "  ✗ Process ") + p.get("name") + (Boolean.TRUE.equals(p.get("up")) ? ": running" : ": not found"));
+        var oc = cfg.otlp();
+        if (oc != null && Boolean.FALSE.equals(oc.enabled())) System.out.println("  - OpenTelemetry receiver: off");
+        else {
+            int port = oc == null || oc.port() == null ? 4318 : oc.port();
+            try {
+                OtlpReceiver r = new OtlpReceiver(port, tracer);
+                r.stop();
+                System.out.println("  ✓ OpenTelemetry receiver: 127.0.0.1:" + port + " is free; apps export with OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:" + port);
+            } catch (Exception e) {
+                System.out.println("  ! OpenTelemetry receiver: port " + port + " is taken (" + e.getMessage() + "); set otlp.port or otlp.enabled=false");
+            }
+        }
+        Map<String, Object> me = self.sample(null, false);
+        System.out.println("  ✓ Agent itself: " + me.get("rssMb") + " MB memory, heap " + me.get("heapUsedMb") + "/" + me.get("heapMaxMb") + " MB, " + me.get("threads") + " threads");
         System.out.println(problems == 0 ? "All good." : problems + " problem(s) found.");
         checks.shutdown();
         return problems == 0 ? 0 : 1;

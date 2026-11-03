@@ -51,8 +51,15 @@ Wants=network-online.target
 [Service]
 User=fyntune-agent
 WorkingDirectory=$HOME_DIR
-ExecStart=$JAVA21 -Xmx128m -jar $HOME_DIR/fyntune-agent.jar $HOME_DIR/agent.json
+# lean JVM for a small background process: about half the CPU and a third less memory than the defaults
+ExecStart=$JAVA21 -Xms16m -Xmx128m -XX:+UseSerialGC -XX:TieredStopAtLevel=1 -XX:MaxMetaspaceSize=64m -XX:ReservedCodeCacheSize=32m -Xss512k -XX:+ExitOnOutOfMemoryError -jar $HOME_DIR/fyntune-agent.jar $HOME_DIR/agent.json
 Restart=always
+# the app always comes first: the agent runs at low priority, never above half a core or 256 MB
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+CPUQuota=50%
+MemoryMax=256M
 RestartSec=10
 ProtectSystem=strict
 ReadWritePaths=$HOME_DIR

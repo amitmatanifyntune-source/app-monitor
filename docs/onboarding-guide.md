@@ -70,7 +70,7 @@ Nothing leaves the client's server except masked counts and messages, sent only 
 - **Database credentials stay local.** They live only in `agent.json` (keep it `chmod 600`) and are never sent. Use a separate read-only monitoring user.
 - **SQL business checks** run only where `"allowServerSqlChecks": true`, as one read-only `SELECT`/`WITH` with a 10 s timeout. Only a count and up to 10 reference values return.
 - **Access per app.** Viewers see only apps assigned to them; the audit log records sign-ins, views and every change.
-- **Retention:** events and check results 30 days, per-minute statistics 90 days, database and host samples 7 days.
+- **Retention:** events and check results 30 days, per-minute statistics and dependencies 90 days, database and host samples and traces 7 days.
 - **Production server settings:** `APP_JWT_SECRET` (at least 32 random bytes), `MONITOR_ADMIN_PASSWORD` (first admin), `DB_URL` / `DB_USER` / `DB_PASSWORD`; put the server behind HTTPS (nginx or a load balancer).
 
 ## Prerequisites
@@ -247,6 +247,21 @@ A new application, `customer-portal`, goes live on one Linux VM: nginx in front,
 ```
 
 For a second server of the same application, register another agent and repeat steps 5 and 6; both report into the same app.
+
+## Traces, dependencies and agent overhead
+
+Logs show requests from the outside; OpenTelemetry shows inside them. Each agent accepts OpenTelemetry traces on
+`127.0.0.1:4318` (OTLP/HTTP), so no collector is needed.
+
+| What | Where in the UI | How to turn it on |
+| --- | --- | --- |
+| Outbound calls: databases, external APIs, queues | **Dependencies** tab | the app's OpenTelemetry instrumentation exports to `http://127.0.0.1:4318` |
+| Whole requests as a waterfall | **Traces** tab | same; the agent keeps failed, slow and 5% of other traces, at most 30 a minute |
+| What the agent itself uses | **Servers** tab → *Monitoring agent overhead* | always on (agent 0.2+) |
+
+- **PHP:** `setup-client.sh --otel`, plus the Composer packages in the app (see the README).
+- **Java:** the OpenTelemetry Java agent with `-Dotel.exporter.otlp.endpoint=http://127.0.0.1:4318 -Dotel.exporter.otlp.protocol=http/protobuf`.
+- Typical cost: the agent 30–100 MB and under 1% CPU; OpenTelemetry in PHP roughly 1–5 ms per request; the Java agent roughly 50–100 MB more memory. Measure on UAT first.
 
 ## Troubleshooting and operations
 

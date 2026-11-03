@@ -20,7 +20,8 @@ It asks for the monitor URL, an app code, the health URL and the monitor admin p
 
 No questions: `sudo MONITOR_URL=https://monitor.example.com APP_CODE=billing-portal HEALTH_URL=https://billing.example.com/up ./setup-client.sh --yes`
 (password from `MONITOR_PASSWORD` or prompted). Options: `--no-db`, `--no-web-log`, `--laravel-single` (switch
-Laravel's daily logs to one file). Running it again reuses the same agent and app. Every file it changes is copied to
+Laravel's daily logs to one file), `--otel` (OpenTelemetry for PHP: installs the extension and points PHP-FPM at the agent
+on `127.0.0.1:4318`; `OTEL_SAMPLE=0.25` records a quarter of requests). Running it again reuses the same agent and app. Every file it changes is copied to
 `/var/backups/fyntune-agent/<date>/` first. No monitor password on hand? Put the `agent.json` downloaded from
 Setup → Agents and `fyntune-agent.jar` next to the script; it then needs no sign-in (except to add the health check).
 
@@ -61,6 +62,8 @@ Two ways, both bring their own Java 21, so the application's Java (17, 11, none 
   No port is published; the agent only makes outbound HTTPS calls to the monitor.
 - The container is read-only, drops all Linux capabilities except `DAC_READ_SEARCH` (read any log file, write none)
   and has `no-new-privileges`. Its only writable place is the `spool` volume.
+- It is capped at half a CPU core and 192 MB (`cpus`, `mem_limit`); measured use is about 0.7% of a core and 80 MB
+  while taking 200 OpenTelemetry spans a second. The systemd install runs at `Nice=10` with `CPUQuota=50%` and `MemoryMax=256M`.
 - `-XX:-UseContainerSupport` makes Java report the host's CPU and memory instead of the container's.
 - Logs outside `/var/log` and `APP_DIR` need one more line under `volumes:` (same path on both sides, `:ro`).
 - Commands, in this folder: `sudo docker compose logs -f`, `sudo docker compose restart`,

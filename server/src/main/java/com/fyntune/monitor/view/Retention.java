@@ -31,6 +31,8 @@ public class Retention {
                   + jdbc.update("DELETE FROM alert_log WHERE at < now() - make_interval(days => ?)", eventsDays)
                   + jdbc.update("DELETE FROM minute_stat WHERE minute < ?", minute)
                   + jdbc.update("DELETE FROM endpoint_minute WHERE minute < ?", minute)
+                  + jdbc.update("DELETE FROM dependency_minute WHERE minute < ?", minute)
+                  + jdbc.update("DELETE FROM trace WHERE at < now() - make_interval(days => ?)", samplesDays)
                   + jdbc.update("DELETE FROM db_sample WHERE at < now() - make_interval(days => ?)", samplesDays)
                   + jdbc.update("DELETE FROM host_sample WHERE at < now() - make_interval(days => ?)", samplesDays);
             if (n > 0) log.info("Retention: removed {} old rows", n);

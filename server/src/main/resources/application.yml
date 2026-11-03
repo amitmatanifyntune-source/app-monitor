@@ -58,4 +58,5 @@ app:
   retention:
     events-days: 30
     minutes-days: 90
+    # database and host samples, and OpenTelemetry traces
     samples-days: 7

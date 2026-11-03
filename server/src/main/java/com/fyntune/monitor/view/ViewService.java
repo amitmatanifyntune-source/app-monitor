@@ -148,6 +148,72 @@ public class ViewService {
                   FROM event WHERE app_id = ? AND request_id = ? ORDER BY at""", appId, requestId);
     }
 
+    // ================================================================== OpenTelemetry
+
+    public record DepStat(String kind, String target, String operation, long calls, long errors, long avg, long p50, long p95, long max,
+                          long totalMs, Instant lastAt) {}
+
+    /** Outbound calls (databases, HTTP APIs, queues) from OpenTelemetry, where the time goes first. */
+    public List<DepStat> dependencies(long appId, int minutes) {
+        long from = nowMinute() - Math.max(5, Math.min(minutes, 60 * 24 * 7));
+        Map<String, long[]> sums = new LinkedHashMap<>(), hist = new HashMap<>();
+        Map<String, Long> last = new HashMap<>();
+        jdbc.query("""
+                SELECT kind, target, operation, minute, calls, errors, total_ms, max_ms, hist
+                  FROM dependency_minute WHERE app_id = ? AND minute >= ?""", rs -> {
+            String k = rs.getString("kind") + "\u0001" + rs.getString("target") + "\u0001" + rs.getString("operation");
+            long[] x = sums.computeIfAbsent(k, y -> new long[4]);
+            x[0] += rs.getLong("calls"); x[1] += rs.getLong("errors"); x[2] += rs.getLong("total_ms"); x[3] = Math.max(x[3], rs.getLong("max_ms"));
+            Hist.add(hist.computeIfAbsent(k, y -> Hist.empty()), Hist.of(rs.getArray("hist")));
+            last.merge(k, rs.getLong("minute"), Math::max);
+        }, appId, from);
+        List<DepStat> out = new ArrayList<>();
+        sums.forEach((k, x) -> {
+            String[] p = k.split("\u0001", -1);
+            long[] h = hist.get(k);
+            out.add(new DepStat(p[0], p[1], p[2], x[0], x[1], x[0] == 0 ? 0 : x[2] / x[0], Hist.pct(h, x[3], 0.5), Hist.pct(h, x[3], 0.95), x[3], x[2],
+                    Instant.ofEpochSecond(last.get(k) * 60)));
+        });
+        out.sort(Comparator.comparingLong(DepStat::totalMs).reversed());
+        return out;
+    }
+
+    public record TraceRow(long id, String traceId, OffsetDateTime at, String name, String service, long durationMs, boolean error, String reason,
+                           Integer status, String requestId, int spanCount, String agentId) {}
+
+    /** Kept traces, newest first. filter: all | error | slow; q: words of the name, a trace id or a request id. */
+    public List<TraceRow> traces(long appId, int minutes, String filter, String q) {
+        StringBuilder sql = new StringBuilder("""
+                SELECT id, trace_id, at, name, service, duration_ms, error, reason, status, request_id, span_count, agent_id
+                  FROM trace WHERE app_id = ? AND at > now() - make_interval(mins => ?)""");
+        List<Object> args = new ArrayList<>(List.of(appId, Math.max(5, Math.min(minutes, 60 * 24 * 7))));
+        if ("error".equals(filter)) sql.append(" AND error");
+        else if ("slow".equals(filter)) sql.append(" AND reason = 'slow'");
+        if (q != null && !q.isBlank()) {
+            sql.append(" AND (name ILIKE ? OR trace_id = ? OR request_id = ?)");
+            String t = q.trim();
+            args.add("%" + t.replace("%", "\\%").replace("_", "\\_") + "%");
+            args.add(t.toLowerCase(Locale.ROOT));
+            args.add(t);
+        }
+        sql.append(" ORDER BY at DESC LIMIT 200");
+        return jdbc.query(sql.toString(), (rs, i) -> new TraceRow(rs.getLong("id"), rs.getString("trace_id"), rs.getObject("at", OffsetDateTime.class),
+                rs.getString("name"), rs.getString("service"), rs.getLong("duration_ms"), rs.getBoolean("error"), rs.getString("reason"),
+                (Integer) rs.getObject("status"), rs.getString("request_id"), rs.getInt("span_count"), rs.getString("agent_id")), args.toArray());
+    }
+
+    /** One kept trace with its spans. */
+    public Map<String, Object> traceDetail(long appId, long id) {
+        List<Map<String, Object>> rows = jdbc.queryForList("""
+                SELECT id, trace_id AS "traceId", at, name, service, duration_ms AS "durationMs", error, reason, status, request_id AS "requestId",
+                       span_count AS "spanCount", agent_id AS "agentId", spans::text AS spans
+                  FROM trace WHERE app_id = ? AND id = ?""", appId, id);
+        if (rows.isEmpty()) return null;
+        Map<String, Object> m = new LinkedHashMap<>(rows.get(0));
+        m.put("spans", read((String) m.get("spans")));
+        return m;
+    }
+
     // ================================================================== checks
 
     public record CheckState(String name, String kind, boolean health, boolean ok, OffsetDateTime at, Long ms, Double value, String message,
@@ -199,7 +265,8 @@ public class ViewService {
             String id = (String) a.get("id");
             List<Map<String, Object>> rows = jdbc.queryForList("""
                     SELECT at, (sample->>'cpu')::float AS cpu, (sample->>'memUsedMb')::bigint AS "memUsedMb", (sample->>'memTotalMb')::bigint AS "memTotalMb",
-                           (sample->>'load1')::float AS load1
+                           (sample->>'load1')::float AS load1, (sample->'agent'->>'cpu')::float AS "agentCpu",
+                           (sample->'agent'->>'rssMb')::bigint AS "agentRssMb"
                       FROM host_sample WHERE app_id = ? AND agent_id = ? AND at > now() - make_interval(mins => ?) ORDER BY at""", appId, id, m);
             List<String> latest = jdbc.queryForList("SELECT sample::text FROM host_sample WHERE app_id = ? AND agent_id = ? ORDER BY at DESC LIMIT 1", String.class, appId, id);
             out.add(new HostView(id, (String) a.get("name"), (String) a.get("host"), latest.isEmpty() ? null : read(latest.get(0)), rows,

@@ -1,5 +1,11 @@
 package com.fyntune.agent;
 
+import java.io.BufferedOutputStream;
+import java.io.ByteArrayInputStream;
+import java.io.OutputStream;
+import java.util.zip.GZIPInputStream;
+import java.util.zip.GZIPOutputStream;
+
 import com.fasterxml.jackson.core.type.TypeReference;
 
 import javax.net.ssl.KeyManagerFactory;
@@ -28,6 +34,8 @@ public final class Transport {
     private final HttpClient http;
     private final Path spool;
     private volatile boolean serverReachable = true;
+    /** Set when the server's settings say it unpacks gzip (server 0.2+); older servers get plain JSON. */
+    private volatile boolean serverGzip;
 
     public Transport(AgentConfig cfg, HttpClient http) throws IOException {
         this.cfg = cfg;
@@ -66,14 +74,18 @@ public final class Transport {
         return ks;
     }
 
-    /** Puts a batch in the spool. Its file name sorts in send order. */
+    /** Puts a batch in the spool, gzip-compressed (typically a tenth of the size). Its file name sorts in send order. */
     public void enqueue(long seq, Map<String, Object> batch) throws IOException {
-        Path f = spool.resolve(String.format("batch-%015d.json", seq));
+        Path f = spool.resolve(String.format("batch-%015d.json.gz", seq));
         Path tmp = spool.resolve(f.getFileName() + ".tmp");
-        AgentConfig.JSON.writeValue(tmp.toFile(), batch);
+        try (OutputStream out = new GZIPOutputStream(new BufferedOutputStream(Files.newOutputStream(tmp)), 8192)) {
+            AgentConfig.JSON.writeValue(out, batch);
+        }
         Files.move(tmp, f, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
         trim();
     }
+
+    public void setServerGzip(boolean v) { serverGzip = v; }
 
     /** Sends spooled batches, oldest first, until one fails. */
     public int flush() {
@@ -81,9 +93,14 @@ public final class Transport {
         for (Path f : pending()) {
             try {
                 byte[] body = Files.readAllBytes(f);
-                HttpResponse<String> res = http.send(request("/ingest/v1/batch").timeout(Duration.ofSeconds(30))
-                        .header("Content-Type", "application/json").POST(HttpRequest.BodyPublishers.ofByteArray(body)).build(),
-                        HttpResponse.BodyHandlers.ofString());
+                boolean gz = f.getFileName().toString().endsWith(".gz");
+                if (gz && !serverGzip) {   // an older server: unpack before sending
+                    try (InputStream in = new GZIPInputStream(new ByteArrayInputStream(body))) { body = in.readAllBytes(); }
+                    gz = false;
+                }
+                HttpRequest.Builder rb = request("/ingest/v1/batch").timeout(Duration.ofSeconds(30)).header("Content-Type", "application/json");
+                if (gz) rb.header("Content-Encoding", "gzip");
+                HttpResponse<String> res = http.send(rb.POST(HttpRequest.BodyPublishers.ofByteArray(body)).build(), HttpResponse.BodyHandlers.ofString());
                 if (res.statusCode() == 200) {
                     Files.deleteIfExists(f);
                     sent++;
@@ -121,7 +138,9 @@ public final class Transport {
                 Log.warn("Could not fetch settings from the server (HTTP " + res.statusCode() + ")");
                 return null;
             }
-            return AgentConfig.JSON.readValue(res.body(), new TypeReference<RemoteConfig>() {});
+            RemoteConfig rc = AgentConfig.JSON.readValue(res.body(), new TypeReference<RemoteConfig>() {});
+            serverGzip = Boolean.TRUE.equals(rc.gzip());
+            return rc;
         } catch (Exception e) {
             Log.debug("Settings not fetched: " + e.getMessage());
             return null;
@@ -140,7 +159,7 @@ public final class Transport {
 
     private List<Path> pending() {
         try (Stream<Path> s = Files.list(spool)) {
-            return s.filter(p -> p.getFileName().toString().matches("batch-\\d+\\.json")).sorted().toList();
+            return s.filter(p -> p.getFileName().toString().matches("batch-\\d+\\.json(\\.gz)?")).sorted().toList();
         } catch (IOException e) {
             return List.of();
         }
