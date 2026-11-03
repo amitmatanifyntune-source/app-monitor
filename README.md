@@ -68,6 +68,9 @@ Production: build the UI (`cd ui && npm run build`), then `cd server && ./mvnw p
 Put it behind HTTPS (nginx or a load balancer). The server refuses to start outside development without a JWT secret.
 
 ## Onboarding an application
+A full guide with the architecture, security, per-stack setup, health checks, deployment patterns and
+troubleshooting is in [docs/onboarding-guide.md](docs/onboarding-guide.md).
+
 The same steps, per stack and with copy buttons, are in the app under **Help: install & track** (`/help`).
 Administrators can also download `fyntune-agent.jar` there.
 
