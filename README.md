@@ -164,6 +164,7 @@ Each agent is also an OpenTelemetry endpoint on `127.0.0.1:4318` (OTLP/HTTP, pro
 OpenTelemetry instrumentation at it and the **Dependencies** and **Traces** tabs fill; nothing goes to a third party and no
 separate collector is needed. Details and limits: `PROTOCOL.md`; per-stack steps: the app's **Help** page.
 
+- **Only OpenTelemetry, agent already installed:** `sudo deploy/agent/enable-otel.sh` (`--java` for Java, `--disable` to undo).
 - **PHP / Laravel:** `deploy/agent/setup-client.sh --otel` installs the `opentelemetry` extension (PHP 8.0+) and sets
   PHP-FPM's `OTEL_*` variables. The app adds `open-telemetry/sdk open-telemetry/exporter-otlp php-http/guzzle7-adapter
   open-telemetry/opentelemetry-auto-laravel open-telemetry/opentelemetry-auto-pdo open-telemetry/opentelemetry-auto-guzzle`.

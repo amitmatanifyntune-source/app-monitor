@@ -288,51 +288,9 @@ fi
 
 # ---------------------------------------------------------------------------------------------------------------
 if [ "$OTEL" = 1 ]; then
-step "4b/6 OpenTelemetry for PHP (traces and outbound calls)"
-if ! command -v php >/dev/null; then warn "php not found; skipped"
-else
-  PHPV="$(php -r 'echo PHP_MAJOR_VERSION.".".PHP_MINOR_VERSION;')"
-  if [ "${PHPV%%.*}" -lt 8 ]; then warn "PHP $PHPV: OpenTelemetry needs PHP 8.0 or newer; skipped"
-  else
-    if php -m 2>/dev/null | grep -qx opentelemetry; then note "opentelemetry extension already loaded"
-    else
-      apt-get install -y "php$PHPV-dev" php-pear build-essential >/dev/null
-      printf '\n' | pecl install opentelemetry >/dev/null 2>&1 || pecl upgrade opentelemetry >/dev/null 2>&1 || true
-      echo "extension=opentelemetry.so" > "/etc/php/$PHPV/mods-available/opentelemetry.ini"
-      phpenmod -v "$PHPV" opentelemetry
-      php -m | grep -qx opentelemetry && note "opentelemetry extension installed for PHP $PHPV" || warn "the extension did not load; see: pecl install opentelemetry"
-    fi
-    POOLDIR="/etc/php/$PHPV/fpm/pool.d"
-    if [ -d "$POOLDIR" ]; then
-      cp -a "$POOLDIR" "$BACKUP/php-fpm-pool.d"
-      for f in "$POOLDIR"/*.conf; do
-        sed -i '/; >>> fyntune-otel/,/; <<< fyntune-otel/d' "$f"
-        cat >> "$f" <<OTELENV
-; >>> fyntune-otel (App Monitor: traces go to the agent on this server)
-env[OTEL_PHP_AUTOLOAD_ENABLED] = true
-env[OTEL_SERVICE_NAME] = $APP_CODE
-env[OTEL_TRACES_EXPORTER] = otlp
-env[OTEL_EXPORTER_OTLP_PROTOCOL] = http/json
-env[OTEL_EXPORTER_OTLP_ENDPOINT] = http://127.0.0.1:4318
-env[OTEL_METRICS_EXPORTER] = none
-env[OTEL_LOGS_EXPORTER] = none
-env[OTEL_PROPAGATORS] = tracecontext
-env[OTEL_TRACES_SAMPLER] = parentbased_traceidratio
-env[OTEL_TRACES_SAMPLER_ARG] = ${OTEL_SAMPLE:-1.0}
-; <<< fyntune-otel
-OTELENV
-      done
-      if "php-fpm$PHPV" -t >/dev/null 2>&1; then systemctl reload "php$PHPV-fpm"; note "PHP-FPM sends traces to 127.0.0.1:4318 (sample ${OTEL_SAMPLE:-1.0})"
-      else rm -rf "$POOLDIR" && cp -a "$BACKUP/php-fpm-pool.d" "$POOLDIR"; warn "php-fpm -t failed; pool config restored"; fi
-    else warn "no $POOLDIR (not PHP-FPM?); set the OTEL_* variables for your PHP runtime by hand"; fi
-    if [ -f "$APP_DIR/composer.json" ] && [ ! -d "$APP_DIR/vendor/open-telemetry/sdk" ]; then
-      warn "the app has no OpenTelemetry packages yet. The app team adds them in the app's repository and deploys:"
-      warn "  composer require open-telemetry/sdk open-telemetry/exporter-otlp php-http/guzzle7-adapter \\"
-      warn "    open-telemetry/opentelemetry-auto-laravel open-telemetry/opentelemetry-auto-pdo open-telemetry/opentelemetry-auto-guzzle"
-      warn "  (plain PHP: leave out opentelemetry-auto-laravel). Traces start after that deploy."
-    fi
-  fi
-fi
+  step "4b/6 OpenTelemetry for PHP (traces and outbound calls)"
+  # the same script turns it on later without a full setup; the agent's otlp setting is written in step 5
+  OTEL_SAMPLE="${OTEL_SAMPLE:-1.0}" "$KIT/enable-otel.sh" --service "$APP_CODE" --app-dir "$APP_DIR" --no-agent | sed '/^==>/d; /^Done\./d; /^$/d' || warn "OpenTelemetry step failed; the rest of the setup continues"
 fi
 
 # ---------------------------------------------------------------------------------------------------------------

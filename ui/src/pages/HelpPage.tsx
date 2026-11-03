@@ -171,7 +171,8 @@ SELECT policy_no AS ref FROM policy WHERE status = 'ISSUED' AND document_id IS N
               SQL is kept without its values; query strings are removed; the usual masking applies.</td></tr>
           </tbody></table>
           <h4>PHP / Laravel</h4>
-          <p>On the app server, <span className="mono">setup-client.sh --otel</span> installs the extension and sets PHP-FPM's variables. The app team adds the packages in the app's repository:</p>
+          <p>On a server that already has the agent, run only <span className="mono">sudo ./enable-otel.sh</span> from the agent kit (or <span className="mono">setup-client.sh --otel</span> on a new server).
+            It turns on the agent's receiver, installs the PHP extension and sets PHP-FPM's variables; <span className="mono">--disable</span> turns it off again. The app team adds the packages in the app's repository:</p>
           <Code>{`sudo pecl install opentelemetry            # PHP 8.0+, then enable extension=opentelemetry.so
 composer require open-telemetry/sdk open-telemetry/exporter-otlp php-http/guzzle7-adapter \
   open-telemetry/opentelemetry-auto-laravel open-telemetry/opentelemetry-auto-pdo open-telemetry/opentelemetry-auto-guzzle
@@ -186,6 +187,7 @@ env[OTEL_LOGS_EXPORTER] = none
 env[OTEL_TRACES_SAMPLER] = parentbased_traceidratio
 env[OTEL_TRACES_SAMPLER_ARG] = 1.0        # 0.25 = record a quarter of requests`}</Code>
           <h4>Java / Spring Boot (no code change, Java 8 or newer)</h4>
+          <p><span className="mono">sudo ./enable-otel.sh --java</span> turns on the agent's receiver and prints these flags for the app's start command:</p>
           <Code>{`java -javaagent:/opt/otel/opentelemetry-javaagent.jar \
   -Dotel.service.name=claims-api \
   -Dotel.exporter.otlp.endpoint=http://127.0.0.1:4318 -Dotel.exporter.otlp.protocol=http/protobuf \

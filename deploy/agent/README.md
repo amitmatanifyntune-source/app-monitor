@@ -25,6 +25,22 @@ on `127.0.0.1:4318`; `OTEL_SAMPLE=0.25` records a quarter of requests). Running 
 `/var/backups/fyntune-agent/<date>/` first. No monitor password on hand? Put the `agent.json` downloaded from
 Setup → Agents and `fyntune-agent.jar` next to the script; it then needs no sign-in (except to add the health check).
 
+## Only OpenTelemetry, on a server that already has the agent
+No need to run the whole setup again:
+
+```bash
+sudo ./enable-otel.sh                  # PHP: agent's otlp setting + PHP extension + PHP-FPM variables
+sudo ./enable-otel.sh --sample 0.25    # record a quarter of PHP requests (default: all)
+sudo ./enable-otel.sh --java           # Java: agent only, then prints the -javaagent flags to add
+sudo ./enable-otel.sh --disable        # turn PHP tracing off again
+```
+
+It touches only the agent's `otlp` setting (restarting the agent if needed), the PHP `opentelemetry` extension and
+PHP-FPM's `OTEL_*` variables; web server, logs, database user and the monitor registration stay as they are. The agent
+must be 0.2.0 or newer: if it is older, put the new `fyntune-agent.jar` (Help → Download agent) next to the script and
+it is installed. The app team still adds the OpenTelemetry Composer packages in the app's repository; the script says
+so if they are missing. Changed files are copied to `/var/backups/fyntune-agent/<date>-otel/` first.
+
 ## Step by step instead
 Two ways, both bring their own Java 21, so the application's Java (17, 11, none for PHP) is never changed.
 
