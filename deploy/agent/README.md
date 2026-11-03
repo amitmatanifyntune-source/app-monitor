@@ -35,11 +35,24 @@ sudo ./enable-otel.sh --java           # Java: agent only, then prints the -java
 sudo ./enable-otel.sh --disable        # turn PHP tracing off again
 ```
 
-It touches only the agent's `otlp` setting (restarting the agent if needed), the PHP `opentelemetry` extension and
-PHP-FPM's `OTEL_*` variables; web server, logs, database user and the monitor registration stay as they are. The agent
-must be 0.2.0 or newer: if it is older, put the new `fyntune-agent.jar` (Help → Download agent) next to the script and
-it is installed. The app team still adds the OpenTelemetry Composer packages in the app's repository; the script says
-so if they are missing. Changed files are copied to `/var/backups/fyntune-agent/<date>-otel/` first.
+It touches only the agent's `otlp` setting (restarting the agent if needed), the PHP `opentelemetry` extension,
+PHP-FPM's `OTEL_*` variables and the app's Composer packages; web server, logs, database user and the monitor
+registration stay as they are. The agent must be 0.2.0 or newer: if it is older, put the new `fyntune-agent.jar`
+(Help → Download agent) next to the script and it is installed.
+
+**The app's OpenTelemetry packages** are added on the server for you (`--no-composer` to skip): the SDK, the OTLP
+exporter, PDO instrumentation, plus Laravel, Guzzle or Symfony HTTP client instrumentation when the app uses them, and an
+HTTP client for the exporter only if the app has none. Safeguards:
+
+- a `composer require --dry-run` first: if the packages would conflict with the app's dependencies, nothing changes;
+- only new packages are added, none of the app's own are upgraded; a `--no-dev` install stays without dev packages;
+- runs as the owner of the app's files, not root;
+- afterwards the app's autoloader (and `php artisan --version` for Laravel) must still load, or `composer.json`,
+  `composer.lock` and `vendor/` are put back; queue workers are told to restart, PHP-FPM is reloaded.
+
+**Commit `composer.json` and `composer.lock` to the app's repository afterwards.** A deploy from the repository replaces
+the app's files, which would remove the packages again. Changed files are copied to
+`/var/backups/fyntune-agent/<date>-otel/` first.
 
 ## Step by step instead
 Two ways, both bring their own Java 21, so the application's Java (17, 11, none for PHP) is never changed.

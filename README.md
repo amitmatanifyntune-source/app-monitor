@@ -165,6 +165,8 @@ OpenTelemetry instrumentation at it and the **Dependencies** and **Traces** tabs
 separate collector is needed. Details and limits: `PROTOCOL.md`; per-stack steps: the app's **Help** page.
 
 - **Only OpenTelemetry, agent already installed:** `sudo deploy/agent/enable-otel.sh` (`--java` for Java, `--disable` to undo).
+  For PHP it also adds the app's Composer packages on the server (dry run first, rolled back on failure; `--no-composer`
+  to skip). Commit `composer.json` and `composer.lock` to the app's repository afterwards.
 - **PHP / Laravel:** `deploy/agent/setup-client.sh --otel` installs the `opentelemetry` extension (PHP 8.0+) and sets
   PHP-FPM's `OTEL_*` variables. The app adds `open-telemetry/sdk open-telemetry/exporter-otlp php-http/guzzle7-adapter
   open-telemetry/opentelemetry-auto-laravel open-telemetry/opentelemetry-auto-pdo open-telemetry/opentelemetry-auto-guzzle`.
