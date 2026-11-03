@@ -1,0 +1,12 @@
+.git
+**/node_modules
+**/target
+server/src/main/resources/static
+spool
+deploy/docker/.env
+deploy/docker/admin-password
+deploy/docker/backups
+**/*.log
+.claude
+.idea
+.vscode

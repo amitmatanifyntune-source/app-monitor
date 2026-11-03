@@ -23,3 +23,7 @@ registration.json
 *.key
 *.p12
 *.jks
+
+# Docker deploy: secrets, first admin password and database dumps on the server
+deploy/docker/admin-password
+deploy/docker/backups/
