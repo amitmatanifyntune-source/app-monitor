@@ -39,7 +39,11 @@ Proton core's own Admin → Monitoring screen is unchanged. Core is just one of 
   - failed checks
   - trace by request id, joining the access-log line and the log's stack trace
 - **Checks:** HTTP (status, time, text, SSL expiry) and SQL business checks, with history.
-- **Servers:** CPU, memory, disks, processes and ports.
+- **Servers:** CPU, memory, disks, processes and ports, plus the **monitoring agent's own overhead** (CPU, memory, heap,
+  spool, spans handled), so the client can see what monitoring costs.
+- **Dependencies** (OpenTelemetry): every database, external API and queue the app calls, with calls, errors, median,
+  p95 and share of time.
+- **Traces** (OpenTelemetry): whole requests as a waterfall; every failed or slow request and a sample of the rest.
 - **Setup** (administrators): agents and their keys, checks, masking and path rules.
 
 ## Run it locally
@@ -155,6 +159,22 @@ Any app can send events to the agent on `http://127.0.0.1:7071/v1/events`; see `
 don't show: the logged-in user, business refusals and exceptions with context. Small Laravel, Spring and browser
 packages that do this are planned. The format is plain JSON, so a few lines of code in any language work today.
 
+## Traces and dependencies (OpenTelemetry)
+Each agent is also an OpenTelemetry endpoint on `127.0.0.1:4318` (OTLP/HTTP, protobuf or JSON). Point the app's
+OpenTelemetry instrumentation at it and the **Dependencies** and **Traces** tabs fill; nothing goes to a third party and no
+separate collector is needed. Details and limits: `PROTOCOL.md`; per-stack steps: the app's **Help** page.
+
+- **PHP / Laravel:** `deploy/agent/setup-client.sh --otel` installs the `opentelemetry` extension (PHP 8.0+) and sets
+  PHP-FPM's `OTEL_*` variables. The app adds `open-telemetry/sdk open-telemetry/exporter-otlp php-http/guzzle7-adapter
+  open-telemetry/opentelemetry-auto-laravel open-telemetry/opentelemetry-auto-pdo open-telemetry/opentelemetry-auto-guzzle`.
+- **Java:** `-javaagent:opentelemetry-javaagent.jar -Dotel.exporter.otlp.endpoint=http://127.0.0.1:4318
+  -Dotel.exporter.otlp.protocol=http/protobuf -Dotel.metrics.exporter=none -Dotel.logs.exporter=none` (no code change).
+
+The agent keeps every failed or slow trace and 5% of the rest, at most 30 a minute, and drops spans past
+`maxSpansPerMinute` without making the app wait. Typical cost in the app: PHP roughly 1–5 ms per request; the Java agent
+a few seconds at start-up and roughly 50–100 MB more memory. Measure on UAT before production; turn it off with
+`OTEL_SDK_DISABLED=true`.
+
 ## Alerts (Slack and WhatsApp)
 Set them up per app, in **Setup → Alerts**. A message goes out when the app becomes **Down** or **Degraded** and has
 stayed that way for 45 seconds. While it stays Down, the message repeats every 30 minutes. One more message goes out
@@ -203,8 +223,9 @@ only for the Slack or WhatsApp channels configured here.
   `tls.keyStore` / `tls.trustStore` in `agent.json`.
 - **Access per app.** Viewers see only the apps they are given. The audit log records sign-ins, app views and every
   change.
-- **Retention:** events and check results 30 days, per-minute statistics 90 days, database and host samples 7 days
-  (`app.retention.*`).
+- **Retention:** events and check results 30 days, per-minute statistics and dependencies 90 days, database and host
+  samples and traces 7 days (`app.retention.*`).
+- **Traces** keep no SQL literal values and no query strings, and are masked on the app server before they are sent.
 
 ## Tests
 ```sh

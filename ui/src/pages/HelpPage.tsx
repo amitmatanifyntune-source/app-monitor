@@ -16,7 +16,7 @@ const STACKS: [Stack, string][] = [['laravel', 'PHP / Laravel + nginx + MySQL'],
 const SECTIONS: [string, string][] = [
   ['how', 'How it works'], ['before', 'Before you start'], ['add', '1 · Add the app'], ['register', '2 · Register an agent'],
   ['install', '3 · Install on the server'], ['test', '4 · Test the setup'], ['service', '5 · Run it as a service'],
-  ['checks', '6 · Add checks'], ['track', 'Tracking the app'], ['investigate', 'Common investigations'],
+  ['checks', '6 · Add checks'], ['otel', 'Traces and dependencies'], ['overhead', 'What the agent costs'], ['track', 'Tracking the app'], ['investigate', 'Common investigations'],
   ['trouble', 'Troubleshooting'], ['data', 'Data and security'],
 ]
 
@@ -161,6 +161,54 @@ SELECT id AS ref FROM failed_jobs WHERE failed_at > CURDATE()
 SELECT policy_no AS ref FROM policy WHERE status = 'ISSUED' AND document_id IS NULL AND issued_at > now() - interval '1 day'`}</Code>
         </Section>
 
+        <Section id="otel" title="Traces and dependencies (OpenTelemetry)">
+          <p>Logs show each request from the outside. To see <b>inside</b> a request (which SQL queries ran, which external APIs were called and how long each took)
+            the app sends OpenTelemetry traces to the agent on its own server. The agent listens on <span className="mono">127.0.0.1:4318</span> (standard OTLP over HTTP,
+            protobuf or JSON); nothing is sent to any third party.</p>
+          <table className="help-t"><tbody>
+            <tr><td><b>Dependencies tab</b></td><td>Every database, external API and queue the app calls, with calls, errors, median, 95% within and share of time.</td></tr>
+            <tr><td><b>Traces tab</b></td><td>Whole requests as a waterfall. The agent keeps every failed or slow request and a 5% sample of the rest, at most 30 a minute.
+              SQL is kept without its values; query strings are removed; the usual masking applies.</td></tr>
+          </tbody></table>
+          <h4>PHP / Laravel</h4>
+          <p>On the app server, <span className="mono">setup-client.sh --otel</span> installs the extension and sets PHP-FPM's variables. The app team adds the packages in the app's repository:</p>
+          <Code>{`sudo pecl install opentelemetry            # PHP 8.0+, then enable extension=opentelemetry.so
+composer require open-telemetry/sdk open-telemetry/exporter-otlp php-http/guzzle7-adapter \
+  open-telemetry/opentelemetry-auto-laravel open-telemetry/opentelemetry-auto-pdo open-telemetry/opentelemetry-auto-guzzle
+
+# PHP-FPM pool (e.g. /etc/php/8.3/fpm/pool.d/www.conf)
+env[OTEL_PHP_AUTOLOAD_ENABLED] = true
+env[OTEL_SERVICE_NAME] = billing-portal
+env[OTEL_EXPORTER_OTLP_ENDPOINT] = http://127.0.0.1:4318
+env[OTEL_EXPORTER_OTLP_PROTOCOL] = http/json
+env[OTEL_METRICS_EXPORTER] = none
+env[OTEL_LOGS_EXPORTER] = none
+env[OTEL_TRACES_SAMPLER] = parentbased_traceidratio
+env[OTEL_TRACES_SAMPLER_ARG] = 1.0        # 0.25 = record a quarter of requests`}</Code>
+          <h4>Java / Spring Boot (no code change, Java 8 or newer)</h4>
+          <Code>{`java -javaagent:/opt/otel/opentelemetry-javaagent.jar \
+  -Dotel.service.name=claims-api \
+  -Dotel.exporter.otlp.endpoint=http://127.0.0.1:4318 -Dotel.exporter.otlp.protocol=http/protobuf \
+  -Dotel.metrics.exporter=none -Dotel.logs.exporter=none \
+  -jar app.jar`}</Code>
+          <p>Node, .NET and Python: their OpenTelemetry auto-instrumentation with the same endpoint and protocol settings.</p>
+          <h4>Limits in agent.json</h4>
+          <Code>{`"otlp": { "enabled": true, "port": 4318, "sampleRatio": 0.05, "maxTracesPerMinute": 30, "maxSpansPerMinute": 50000 }`}</Code>
+          <p>Over <span className="mono">maxSpansPerMinute</span> spans are dropped and counted, and the app is never made to wait. Two agents on one server: give one of them another port.</p>
+        </Section>
+
+        <Section id="overhead" title="What the agent costs the server">
+          <p>Every agent reports its own CPU, memory, Java heap, threads and spool size, and how many OpenTelemetry spans it handled. They are shown on the
+            <b> Servers</b> tab under <i>Monitoring agent overhead</i>, next to the app's figures, so the client can see the cost.</p>
+          <table className="help-t"><tbody>
+            <tr><td><b>Agent</b></td><td>Typically 30–100 MB of memory and well under 1% CPU. Java heap is capped at 128 MB; the Docker container at 256 MB. One batch a minute, a few KB.</td></tr>
+            <tr><td><b>OpenTelemetry in a PHP app</b></td><td>Roughly 1–5 ms per request and a few MB per PHP-FPM worker; more with many queries per request. Lower it with
+              <span className="mono"> OTEL_TRACES_SAMPLER_ARG</span>; turn it off with <span className="mono">OTEL_SDK_DISABLED=true</span>.</td></tr>
+            <tr><td><b>OpenTelemetry Java agent</b></td><td>A few seconds more at start-up, roughly 50–100 MB more memory and a few % CPU under load.</td></tr>
+            <tr><td><b>Measure it</b></td><td>Load-test the same UAT build with and without tracing and compare the 95% within and PHP-FPM or JVM CPU. These ranges are typical, not promised.</td></tr>
+          </tbody></table>
+        </Section>
+
         <Section id="track" title="Tracking the app">
           <h4>Status</h4>
           <table className="help-t"><tbody>
@@ -216,7 +264,8 @@ SELECT policy_no AS ref FROM policy WHERE status = 'ISSUED' AND document_id IS N
             <li><b>Database credentials stay with the client</b>, in agent.json on their server. The database user is read-only and reads statistics only.</li>
             <li><b>Outbound only</b>, over HTTPS; optional mutual TLS. Agent keys are stored here only as a hash and can be revoked at any time.</li>
             <li><b>Access by app:</b> viewers see only the apps an administrator gives them. Sign-ins, app views and every change are in the Audit log.</li>
-            <li><b>Kept for</b> 30 days (events, check results), 90 days (per-minute figures), 7 days (database and server samples).</li>
+            <li><b>Kept for</b> 30 days (events, check results), 90 days (per-minute figures, dependencies), 7 days (database and server samples, traces).</li>
+            <li><b>Traces:</b> SQL keeps no literal values, URLs lose their query strings, and every text is masked before it leaves the app server.</li>
           </ul>
         </Section>
       </div>

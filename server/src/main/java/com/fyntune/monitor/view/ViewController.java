@@ -71,6 +71,24 @@ public class ViewController {
         return svc.trace(access.require(code), requestId.trim());
     }
 
+    @GetMapping("/{code}/dependencies")
+    public List<ViewService.DepStat> dependencies(@PathVariable String code, @RequestParam(defaultValue = "60") int minutes) {
+        return svc.dependencies(access.require(code), minutes);
+    }
+
+    @GetMapping("/{code}/traces")
+    public List<ViewService.TraceRow> traces(@PathVariable String code, @RequestParam(defaultValue = "60") int minutes,
+                                             @RequestParam(defaultValue = "all") String filter, @RequestParam(required = false) String q) {
+        return svc.traces(access.require(code), minutes, filter, q);
+    }
+
+    @GetMapping("/{code}/traces/{id}")
+    public Map<String, Object> traceDetail(@PathVariable String code, @PathVariable long id) {
+        Map<String, Object> t = svc.traceDetail(access.require(code), id);
+        if (t == null) throw ApiException.notFound("Trace");
+        return t;
+    }
+
     @GetMapping("/{code}/checks")
     public List<ViewService.CheckState> checks(@PathVariable String code) {
         return svc.checks(access.require(code));

@@ -67,7 +67,7 @@ class DeliveryTest {
         srv.start();
         try {
             AgentConfig cfg = new AgentConfig(new AgentConfig.Server("http://127.0.0.1:" + srv.getAddress().getPort(), "ag_test", "k"),
-                    dir.toString(), 1, null, null, null, false, null, null, null, null, null, null, null);
+                    dir.toString(), 1, null, null, null, false, null, null, null, null, null, null, null, null);
             Transport tr = new Transport(cfg, HttpClient.newHttpClient());
             for (long seq = 1; seq <= 3; seq++) {
                 tr.enqueue(seq, Map.of("v", 1, "seq", seq));

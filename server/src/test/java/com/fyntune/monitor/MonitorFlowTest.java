@@ -162,4 +162,65 @@ class MonitorFlowTest {
         ingest(id2, key2, Map.of("v", 1, "seq", 1), 401);
         assertTrue(call(get("/api/admin/audit"), admin, null, 200).toString().contains("AGENT_REGISTERED"));
     }
+
+    @Test
+    void openTelemetryDependenciesTracesAndAgentOverhead() throws Exception {
+        call(post("/api/admin/apps"), admin, Map.of("code", "traced", "name", "Traced app"), 200);
+        JsonNode reg = call(post("/api/admin/apps/traced/agents"), admin, Map.of("name", "php-1"), 200);
+        String id = reg.get("agentId").asText(), key = reg.get("agentKey").asText();
+        long minute = System.currentTimeMillis() / 60000 - 1;
+        long[] fast = Hist.empty(); fast[1] = 40;   // 40 calls up to 25 ms
+        long[] slow = Hist.empty(); slow[7] = 3;    // 3 calls up to 1600 ms
+        String trace = "4bf92f3577b34da6a3ce929d0e0e4736";
+        Map<String, Object> batch = Map.of("v", 1, "seq", 1,
+                "deps", List.of(
+                        Map.of("minute", minute, "kind", "db", "target", "mysql claims @ 127.0.0.1", "operation", "SELECT policies",
+                                "calls", 40, "errors", 0, "totalMs", 400, "maxMs", 22, "hist", fast),
+                        Map.of("minute", minute, "kind", "http", "target", "api.insurer.example", "operation", "POST /v2/claims/{id}",
+                                "calls", 3, "errors", 1, "totalMs", 4200, "maxMs", 1900, "hist", slow)),
+                "traces", List.of(Map.of("traceId", trace, "at", System.currentTimeMillis() - 30_000, "name", "POST /claims/{id}/submit",
+                        "service", "claims-api", "durationMs", 2300, "error", true, "reason", "error", "status", 502, "requestId", "9f2c1ab07e3d",
+                        "spans", List.of(
+                                Map.of("id", "00f067aa0ba902b7", "name", "POST /claims/{id}/submit", "kind", 2, "startUs", 0, "durUs", 2_300_000),
+                                Map.of("id", "2222222222222222", "parent", "00f067aa0ba902b7", "name", "POST", "kind", 3, "startUs", 100_000,
+                                        "durUs", 1_900_000, "error", true, "dep", "http", "target", "api.insurer.example")))),
+                "hostStats", Map.of("at", System.currentTimeMillis(), "cpu", 0.25, "memUsedMb", 2000, "memTotalMb", 4000,
+                        "agent", Map.of("cpu", 0.004, "rssMb", 96, "heapUsedMb", 30, "heapMaxMb", 128, "spansReceived", 1200)));
+        ingest(id, key, batch, 200);
+        ingest(id, key, batch, 200);   // the same seq again: ignored, nothing counted twice
+
+        JsonNode deps = call(get("/api/apps/traced/dependencies?minutes=15"), admin, null, 200);
+        assertEquals(2, deps.size(), deps.toString());
+        assertEquals("http", deps.get(0).get("kind").asText(), "where the time goes first");
+        assertEquals(3, deps.get(0).get("calls").asLong());
+        assertEquals(1, deps.get(0).get("errors").asLong());
+        assertEquals(1400, deps.get(0).get("avg").asLong());
+        assertEquals(40, deps.get(1).get("calls").asLong());
+
+        JsonNode traces = call(get("/api/apps/traced/traces?minutes=15"), admin, null, 200);
+        assertEquals(1, traces.size());
+        assertEquals("error", traces.get(0).get("reason").asText());
+        assertEquals(1, call(get("/api/apps/traced/traces?filter=error"), admin, null, 200).size());
+        assertEquals(0, call(get("/api/apps/traced/traces?filter=slow"), admin, null, 200).size());
+        assertEquals(1, call(get("/api/apps/traced/traces?q=9f2c1ab07e3d"), admin, null, 200).size(), "found by request id");
+        assertEquals(1, call(get("/api/apps/traced/traces?q=" + trace), admin, null, 200).size(), "found by trace id");
+        assertEquals(1, call(get("/api/apps/traced/traces?q=claims"), admin, null, 200).size(), "found by name");
+        JsonNode detail = call(get("/api/apps/traced/traces/" + traces.get(0).get("id").asLong()), admin, null, 200);
+        assertEquals(2, detail.get("spans").size());
+        assertEquals("api.insurer.example", detail.at("/spans/1/target").asText());
+        call(get("/api/apps/traced/traces/999999"), admin, null, 404);
+
+        JsonNode host = call(get("/api/apps/traced/host"), admin, null, 200);
+        assertEquals(96, host.at("/0/latest/agent/rssMb").asLong());
+        assertEquals(96, host.at("/0/series/0/agentRssMb").asLong());
+
+        // a bad trace id or an unknown kind does not get in as it is
+        ingest(id, key, Map.of("v", 1, "seq", 2, "traces", List.of(Map.of("traceId", "not-hex", "spans", List.of())),
+                "deps", List.of(Map.of("minute", minute, "kind", "weird", "target", "x", "operation", "", "calls", 1, "errors", 0,
+                        "totalMs", 1, "maxMs", 1, "hist", fast))), 200);
+        assertEquals(1, call(get("/api/apps/traced/traces"), admin, null, 200).size());
+        boolean other = false;
+        for (JsonNode d : call(get("/api/apps/traced/dependencies"), admin, null, 200)) other |= d.get("kind").asText().equals("other");
+        assertTrue(other);
+    }
 }

@@ -5,6 +5,7 @@ component sits anywhere in this path.
 
 ```
 in-app library ──POST http://127.0.0.1:7071/v1/events──► agent ──POST /ingest/v1/batch──► monitoring server
+OpenTelemetry SDK ─POST http://127.0.0.1:4318/v1/traces─►
                                                           agent ◄──GET /ingest/v1/config──
 ```
 
@@ -75,6 +76,30 @@ whose `seq` is not above the last one it stored for the agent, so a resend after
 - The agent masks every text field before sending: emails, mobile numbers, PAN, Aadhaar, card numbers and any custom
   patterns. Query strings and request or response bodies are never sent.
 
+### OpenTelemetry fields (agent 0.2+)
+Present only when the agent received OpenTelemetry spans (see the OTLP section below).
+
+```json
+"deps": [
+  { "minute": 29358166, "kind": "http", "target": "api.insurer.example", "operation": "POST /v2/claims/{id}",
+    "calls": 3, "errors": 1, "totalMs": 4200, "maxMs": 1900, "hist": [0,0,0,0,0,0,0,3,0,0,0,0] }
+],
+"traces": [
+  { "traceId": "4bf92f3577b34da6a3ce929d0e0e4736", "at": 1761489990000, "name": "POST /claims/{id}/submit", "service": "claims-api",
+    "durationMs": 2300, "error": true, "reason": "error", "status": 502, "requestId": "9f2c1ab07e3d", "spanCount": 3,
+    "spans": [ { "id": "00f067aa0ba902b7", "name": "POST /claims/{id}/submit", "kind": 2, "startUs": 0, "durUs": 2300000 },
+               { "id": "2222222222222222", "parent": "00f067aa0ba902b7", "name": "POST", "kind": 3, "startUs": 100000, "durUs": 1900000,
+                 "error": true, "dep": "http", "target": "api.insurer.example", "attrs": { "url.full": "https://api.insurer.example/v2/claims/98765" } } ] }
+]
+```
+
+- `deps[].kind` is `db`, `http`, `queue` or `other`. `operation` is a summary such as `SELECT policies` or `POST /v1/orders/{id}`.
+- `traces[].reason` is `error`, `slow` (root over the slow threshold) or `sample`. Span `kind` is OpenTelemetry's SpanKind
+  (1 internal, 2 server, 3 client, 4 producer, 5 consumer). Times are relative to the trace start, in microseconds.
+- `hostStats.agent` is what the agent itself costs the server: `cpu` (share of the machine, 0–1), `rssMb`, `heapUsedMb`,
+  `heapMaxMb`, `threads`, `uptimeSec`, `spoolKb`, `otlp` (receiver listening), and since the previous batch `spansReceived`,
+  `spansDropped`, `tracesKept`, `tracesDropped`, `tracesPending`.
+
 Reply: `200 {"accepted": true, "seq": 42}`, or `{"accepted": false, "seq": <last stored>}` for a duplicate.
 
 ## `GET /ingest/v1/config`
@@ -109,3 +134,22 @@ above. Requests can also be sent so the agent counts them like access-log lines:
 
 The receiver listens only on `127.0.0.1`. Set `localReceiver.token` in `agent.json` to also require
 `Authorization: Bearer <token>`.
+
+## `POST http://127.0.0.1:4318/v1/traces` (agent, local only): OpenTelemetry
+The agent is an OTLP/HTTP trace endpoint, so apps export with `OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318` and no
+collector is needed. Both `application/x-protobuf` (the Java agent's default) and `application/json` are read, optionally
+gzip. `/v1/metrics` and `/v1/logs` are accepted and ignored. The port and limits are in `agent.json`:
+
+```json
+"otlp": { "enabled": true, "port": 4318, "sampleRatio": 0.05, "maxTracesPerMinute": 30, "maxSpansPerMinute": 50000 }
+```
+
+- Every client or producer span (and any span with `db.system` or `messaging.system`) is counted in `deps` by kind, target and
+  operation.
+- Spans are grouped by trace; a trace is complete 3 s after its last span once its root has arrived (30 s at most). Failed
+  and slow traces are kept up to `maxTracesPerMinute`; others by `sampleRatio`, decided from the trace id (the same on every
+  agent), up to a third of that limit.
+- Before anything is sent: SQL loses its literal values (`'x'` and `42` become `?`), URLs lose their query strings, and every
+  text field goes through the agent's masking. Only a fixed list of attributes is kept (HTTP method, route, status, host,
+  database system and statement, messaging destination, exception type and message).
+- Over `maxSpansPerMinute` spans are dropped and counted; the receiver always answers at once, so the app never waits.

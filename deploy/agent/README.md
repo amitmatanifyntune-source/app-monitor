@@ -20,7 +20,8 @@ It asks for the monitor URL, an app code, the health URL and the monitor admin p
 
 No questions: `sudo MONITOR_URL=https://monitor.example.com APP_CODE=billing-portal HEALTH_URL=https://billing.example.com/up ./setup-client.sh --yes`
 (password from `MONITOR_PASSWORD` or prompted). Options: `--no-db`, `--no-web-log`, `--laravel-single` (switch
-Laravel's daily logs to one file). Running it again reuses the same agent and app. Every file it changes is copied to
+Laravel's daily logs to one file), `--otel` (OpenTelemetry for PHP: installs the extension and points PHP-FPM at the agent
+on `127.0.0.1:4318`; `OTEL_SAMPLE=0.25` records a quarter of requests). Running it again reuses the same agent and app. Every file it changes is copied to
 `/var/backups/fyntune-agent/<date>/` first. No monitor password on hand? Put the `agent.json` downloaded from
 Setup → Agents and `fyntune-agent.jar` next to the script; it then needs no sign-in (except to add the health check).
 

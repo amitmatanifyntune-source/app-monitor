@@ -1,5 +1,6 @@
 package com.fyntune.monitor.ingest;
 
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fyntune.monitor.common.Hist;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -14,7 +15,8 @@ import java.util.*;
 @Service
 public class IngestService {
     /** Per batch; an agent that sends more is cut off at these. */
-    static final int MAX_EVENTS = 1000, MAX_ENDPOINTS = 5000, MAX_CHECKS = 200;
+    static final int MAX_EVENTS = 1000, MAX_ENDPOINTS = 5000, MAX_CHECKS = 200, MAX_DEPS = 5000, MAX_TRACES = 120, MAX_TRACE_JSON = 400_000;
+    private static final Set<String> DEP_KINDS = Set.of("db", "http", "queue", "other");
     private static final Set<String> TYPES = Set.of("ERROR", "REFUSED", "SLOW", "LOG_ERROR", "CHECK_FAIL", "APP");
 
     // adds two histograms element by element
@@ -76,6 +78,36 @@ public class IngestService {
                     cut(c.message(), 600), write(c.refs() == null ? List.of() : c.refs().stream().limit(10).toList()));
             if (!c.ok())
                 event(app, agent.id(), at(c.at()), "CHECK_FAIL", "check:" + c.name(), null, null, null, null, c.ms(), null, c.name() + ": " + c.message(), null);
+        }
+
+        if (b.deps() != null) for (Batch.Dep d : b.deps().stream().limit(MAX_DEPS).toList()) {
+            if (d.target() == null || d.kind() == null || d.hist() == null) continue;
+            String kind = d.kind().toLowerCase(Locale.ROOT);
+            jdbc.update("""
+                    INSERT INTO dependency_minute (app_id, minute, kind, target, operation, calls, errors, total_ms, max_ms, hist)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT (app_id, minute, kind, target, operation) DO UPDATE SET
+                      calls = dependency_minute.calls + EXCLUDED.calls, errors = dependency_minute.errors + EXCLUDED.errors,
+                      total_ms = dependency_minute.total_ms + EXCLUDED.total_ms, max_ms = greatest(dependency_minute.max_ms, EXCLUDED.max_ms),
+                      hist = """ + ADD_HIST.formatted("dependency_minute"),
+                    app, d.minute(), DEP_KINDS.contains(kind) ? kind : "other", cut(d.target(), 200), cut(d.operation() == null ? "" : d.operation(), 200),
+                    d.calls(), d.errors(), d.totalMs(), d.maxMs(), array(d.hist()));
+        }
+
+        if (b.traces() != null) for (JsonNode t : b.traces().stream().limit(MAX_TRACES).toList()) {
+            String traceId = t.path("traceId").asText("");
+            JsonNode spans = t.path("spans");
+            if (!traceId.matches("[0-9a-f]{16,32}") || !spans.isArray()) continue;
+            String spansJson = spans.toString();
+            if (spansJson.length() > MAX_TRACE_JSON) continue;
+            String reason = t.path("reason").asText("sample");
+            jdbc.update("""
+                    INSERT INTO trace (app_id, agent_id, trace_id, at, name, service, duration_ms, error, reason, status, request_id, span_count, spans)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?::jsonb)""",
+                    app, agent.id(), traceId, at(t.path("at").isNumber() ? t.path("at").asLong() : null), cut(t.path("name").asText("(unnamed)"), 300),
+                    cut(t.path("service").asText(null), 120), Math.max(0, t.path("durationMs").asLong(0)), t.path("error").asBoolean(false),
+                    Set.of("error", "slow", "sample").contains(reason) ? reason : "sample", t.path("status").isInt() ? t.path("status").asInt() : null,
+                    cut(t.path("requestId").asText(null), 64), Math.max(spans.size(), t.path("spanCount").asInt(0)), spansJson);
         }
 
         if (b.db() != null && b.db().snapshot() != null)

@@ -10,10 +10,12 @@ import Database from '../tabs/Database'
 import IssuesTab from '../tabs/Issues'
 import ChecksTab from '../tabs/Checks'
 import HostTab from '../tabs/Host'
+import Dependencies from '../tabs/Dependencies'
+import Traces from '../tabs/Traces'
 import Setup from '../tabs/Setup'
 
-export type Tab = 'dashboard' | 'overview' | 'apis' | 'database' | 'issues' | 'checks' | 'host' | 'setup'
-const TABS: [Tab, string][] = [['dashboard', 'Dashboard'], ['overview', 'Highlights'], ['apis', 'APIs'], ['database', 'Database'], ['issues', 'Errors & issues'],
+export type Tab = 'dashboard' | 'overview' | 'apis' | 'dependencies' | 'traces' | 'database' | 'issues' | 'checks' | 'host' | 'setup'
+const TABS: [Tab, string][] = [['dashboard', 'Dashboard'], ['overview', 'Highlights'], ['apis', 'APIs'], ['dependencies', 'Dependencies'], ['traces', 'Traces'], ['database', 'Database'], ['issues', 'Errors & issues'],
   ['checks', 'Checks'], ['host', 'Servers'], ['setup', 'Setup']]
 
 export default function AppPage({ admin }: { admin: boolean }) {
@@ -61,6 +63,8 @@ export default function AppPage({ admin }: { admin: boolean }) {
       {tab === 'dashboard' && <Dashboard code={code} summary={s.data} go={go} />}
       {tab === 'overview' && <Overview code={code} summary={s.data} go={go} />}
       {tab === 'apis' && <Apis code={code} />}
+      {tab === 'dependencies' && <Dependencies code={code} />}
+      {tab === 'traces' && <Traces code={code} traceId={params.get('trace') ?? ''} go={go} />}
       {tab === 'database' && <Database code={code} />}
       {tab === 'issues' && <IssuesTab code={code} requestId={params.get('rid') ?? ''} go={go} />}
       {tab === 'checks' && <ChecksTab code={code} />}
