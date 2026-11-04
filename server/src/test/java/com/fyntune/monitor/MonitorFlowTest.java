@@ -259,4 +259,22 @@ class MonitorFlowTest {
         assertNotNull(res.getHeader("X-Agent-Version"));
         assertEquals("PK", new String(body, 0, 2), "a jar (zip) file");
     }
+
+    @Test
+    void agentsFetchTheInstallKitWithTheirOwnKey() throws Exception {
+        call(post("/api/admin/apps"), admin, Map.of("code", "kitted", "name", "Kitted"), 200);
+        JsonNode reg = call(post("/api/admin/apps/kitted/agents"), admin, Map.of("name", "k-1"), 200);
+        String id = reg.get("agentId").asText(), key = reg.get("agentKey").asText();
+        mvc.perform(get("/ingest/v1/agent-kit.zip").header("X-Agent-Id", id).header("X-Agent-Key", "nope")).andExpect(status().isUnauthorized());
+        var res = mvc.perform(get("/ingest/v1/agent-kit.zip").header("X-Agent-Id", id).header("X-Agent-Key", key)).andReturn().getResponse();
+        assertEquals(200, res.getStatus(), "the kit folder (deploy/agent) is next to the server in this checkout");
+        byte[] zip = res.getContentAsByteArray();
+        assertEquals(java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256").digest(zip)), res.getHeader("X-Kit-Sha256"));
+        java.util.Set<String> names = new java.util.HashSet<>();
+        try (var zin = new java.util.zip.ZipInputStream(new java.io.ByteArrayInputStream(zip))) {
+            for (var e = zin.getNextEntry(); e != null; e = zin.getNextEntry()) names.add(e.getName());
+        }
+        assertTrue(names.containsAll(java.util.Set.of("update.sh", "update-agent.sh", "enable-otel.sh", "setup-client.sh", "Dockerfile", "docker-compose.yml")), names.toString());
+        assertFalse(names.contains("agent.json") || names.contains(".env") || names.stream().anyMatch(n -> n.endsWith(".jar")), names.toString());
+    }
 }

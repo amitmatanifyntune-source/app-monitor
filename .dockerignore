@@ -10,3 +10,6 @@ deploy/docker/backups
 .claude
 .idea
 .vscode
+deploy/agent/fyntune-agent.jar
+deploy/agent/agent.json
+deploy/agent/.env

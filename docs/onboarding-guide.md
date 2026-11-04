@@ -263,6 +263,13 @@ Logs show requests from the outside; OpenTelemetry shows inside them. Each agent
 - **Java:** the OpenTelemetry Java agent with `-Dotel.exporter.otlp.endpoint=http://127.0.0.1:4318 -Dotel.exporter.otlp.protocol=http/protobuf`.
 - Typical cost: the agent 30–100 MB and under 1% CPU; OpenTelemetry in PHP roughly 1–5 ms per request; the Java agent roughly 50–100 MB more memory. Measure on UAT first.
 
+## Updating
+
+| Where | Command | What it does |
+| --- | --- | --- |
+| Monitor server | `cd app-monitor/deploy/docker && sudo ./update.sh` | backup, pull, build, restart, health check, automatic rollback |
+| Each client server | `sudo fyntune-update` (`--auto on` for nightly) | latest kit and agent from the monitor with the agent's own key; settings kept |
+
 ## Troubleshooting and operations
 
 Start every investigation with `java -jar fyntune-agent.jar agent.json --test` and the agent's own log.

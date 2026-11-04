@@ -16,7 +16,7 @@ const STACKS: [Stack, string][] = [['laravel', 'PHP / Laravel + nginx + MySQL'],
 const SECTIONS: [string, string][] = [
   ['how', 'How it works'], ['before', 'Before you start'], ['add', '1 · Add the app'], ['register', '2 · Register an agent'],
   ['install', '3 · Install on the server'], ['test', '4 · Test the setup'], ['service', '5 · Run it as a service'],
-  ['checks', '6 · Add checks'], ['otel', 'Traces and dependencies'], ['overhead', 'What the agent costs'], ['track', 'Tracking the app'], ['investigate', 'Common investigations'],
+  ['checks', '6 · Add checks'], ['otel', 'Traces and dependencies'], ['overhead', 'What the agent costs'], ['update', 'Updating'], ['track', 'Tracking the app'], ['investigate', 'Common investigations'],
   ['trouble', 'Troubleshooting'], ['data', 'Data and security'],
 ]
 
@@ -214,6 +214,19 @@ env[OTEL_TRACES_SAMPLER_ARG] = 1.0        # 0.25 = record a quarter of requests`
             <tr><td><b>OpenTelemetry Java agent</b></td><td>A few seconds more at start-up, roughly 50–100 MB more memory and a few % CPU under load.</td></tr>
             <tr><td><b>Measure it</b></td><td>Load-test the same UAT build with and without tracing and compare the 95% within and PHP-FPM or JVM CPU. These ranges are typical, not promised.</td></tr>
           </tbody></table>
+        </Section>
+
+        <Section id="update" title="Updating, without reinstalling">
+          <p>After a change is merged on GitHub, update the monitor once, then each client server, with one command each. Settings and data stay.</p>
+          <h4>1 · This monitoring server</h4>
+          <Code>{`cd app-monitor/deploy/docker && sudo ./update.sh`}</Code>
+          <p>Backs up the database, pulls the latest code, builds while the current version keeps running, restarts, and checks it is healthy;
+            if it is not, it goes back to the previous version by itself. The restart takes under a minute.</p>
+          <h4>2 · Each client server</h4>
+          <Code>{`sudo fyntune-update               # latest scripts, Docker files and agent from this monitor
+sudo fyntune-update --auto on     # every night at about 03:00`}</Code>
+          <p>The agent fetches them from here with its own key; nothing is needed from the code repository and no password is asked.
+            <span className="mono"> agent.json</span> (logs, database, OpenTelemetry) is never replaced. Setup → Agents shows each agent's version after it reports.</p>
         </Section>
 
         <Section id="track" title="Tracking the app">

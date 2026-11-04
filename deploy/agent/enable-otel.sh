@@ -179,29 +179,34 @@ PY
     fi
     rm -f "$TMPJAR"
 
-    if [ "$JAR_CHANGED" = 1 ]; then
-      if [ "$MODE" = docker ] && [ -f "$KIT/Dockerfile" ] && [ "$KIT" != "$AGENT_DIR" ]; then
-        # the kit's newer Dockerfile and compose file bring the lean JVM settings and the CPU/memory caps
-        for f in Dockerfile docker-compose.yml; do
-          [ -f "$KIT/$f" ] && ! cmp -s "$KIT/$f" "$AGENT_DIR/$f" && { cp -a "$AGENT_DIR/$f" "$BACKUP/" 2>/dev/null; install -m 644 "$KIT/$f" "$AGENT_DIR/$f"; note "updated $f"; }
-        done
-      elif [ "$MODE" = systemd ]; then
-        UNIT="$(systemctl show -p FragmentPath --value fyntune-agent)"
-        if [ -n "$UNIT" ] && [ -f "$UNIT" ]; then
-          cp -a "$UNIT" "$BACKUP/"
-          LEAN="-Xms16m -Xmx128m -XX:+UseSerialGC -XX:TieredStopAtLevel=1 -XX:MaxMetaspaceSize=64m -XX:ReservedCodeCacheSize=32m -Xss512k -XX:+ExitOnOutOfMemoryError"
-          if ! grep -q UseSerialGC "$UNIT"; then
-            sed -i -E "s#^(ExecStart=[^ ]*java)( -Xmx[0-9]+[mMgG])? #\1 $LEAN #" "$UNIT" && note "service: lean JVM settings"
-          fi
-          if ! grep -q '^CPUQuota=' "$UNIT"; then
-            sed -i '/^Restart=always/a Nice=10\nIOSchedulingClass=best-effort\nIOSchedulingPriority=7\nCPUQuota=50%\nMemoryMax=256M' "$UNIT" && note "service: low priority, capped at half a core and 256 MB"
-          fi
-          systemctl daemon-reload
-        fi
-      fi
-    fi
   else
     note "agent $CUR already supports OpenTelemetry"
+  fi
+
+  # newer Docker files or service settings from the kit, whether or not the jar changed
+  FILES_CHANGED=0
+  if [ "$MODE" = docker ] && [ -f "$KIT/Dockerfile" ] && [ "$KIT" != "$AGENT_DIR" ]; then
+    # the kit's Dockerfile and compose file bring the lean JVM settings and the CPU/memory caps; .env stays
+    for f in Dockerfile docker-compose.yml; do
+      if [ -f "$KIT/$f" ] && ! cmp -s "$KIT/$f" "$AGENT_DIR/$f"; then
+        cp -a "$AGENT_DIR/$f" "$BACKUP/" 2>/dev/null || true
+        install -m 644 "$KIT/$f" "$AGENT_DIR/$f"; note "updated $f"; FILES_CHANGED=1
+      fi
+    done
+  elif [ "$MODE" = systemd ]; then
+    UNIT="$(systemctl show -p FragmentPath --value fyntune-agent)"
+    if [ -n "$UNIT" ] && [ -f "$UNIT" ] && { ! grep -q UseSerialGC "$UNIT" || ! grep -q '^CPUQuota=' "$UNIT"; }; then
+      cp -a "$UNIT" "$BACKUP/"
+      LEAN="-Xms16m -Xmx128m -XX:+UseSerialGC -XX:TieredStopAtLevel=1 -XX:MaxMetaspaceSize=64m -XX:ReservedCodeCacheSize=32m -Xss512k -XX:+ExitOnOutOfMemoryError"
+      if ! grep -q UseSerialGC "$UNIT"; then
+        sed -i -E "s#^(ExecStart=[^ ]*java)( -Xmx[0-9]+[mMgG])? #\1 $LEAN #" "$UNIT" && note "service: lean JVM settings"
+      fi
+      if ! grep -q '^CPUQuota=' "$UNIT"; then
+        sed -i '/^Restart=always/a Nice=10\nIOSchedulingClass=best-effort\nIOSchedulingPriority=7\nCPUQuota=50%\nMemoryMax=256M' "$UNIT" && note "service: low priority, capped at half a core and 256 MB"
+      fi
+      systemctl daemon-reload
+      FILES_CHANGED=1
+    fi
   fi
 
   CHANGED=0
@@ -220,7 +225,7 @@ PY
     [ "$CHANGED" = 1 ] && note "agent.json: otlp turned on (keeps failed and slow traces, 5% of the rest, at most 30 a minute)"
   fi
 
-  if [ "$CHANGED" = 1 ] || [ "$JAR_CHANGED" = 1 ] || { [ "$UPGRADE_ONLY" = 0 ] && ! ss -ltn 2>/dev/null | grep -q ':4318 '; }; then
+  if [ "$CHANGED" = 1 ] || [ "$JAR_CHANGED" = 1 ] || [ "$FILES_CHANGED" = 1 ] || { [ "$UPGRADE_ONLY" = 0 ] && ! ss -ltn 2>/dev/null | grep -q ':4318 '; }; then
     case "$MODE" in
       docker) (cd "$AGENT_DIR" && docker compose up -d --build --force-recreate >/dev/null) && note "agent container rebuilt and restarted" ;;
       systemd) systemctl restart fyntune-agent && note "agent service restarted" ;;

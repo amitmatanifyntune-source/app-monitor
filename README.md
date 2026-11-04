@@ -159,6 +159,20 @@ Any app can send events to the agent on `http://127.0.0.1:7071/v1/events`; see `
 don't show: the logged-in user, business refusals and exceptions with context. Small Laravel, Spring and browser
 packages that do this are planned. The format is plain JSON, so a few lines of code in any language work today.
 
+## Updating (no reinstall)
+After a change is merged on GitHub:
+
+1. **Monitor**, once: `cd app-monitor/deploy/docker && sudo ./update.sh`. It backs up the database, pulls `main`,
+   builds the new image while the old one keeps running, restarts (database migrations run on start-up), waits until
+   it is healthy, and goes back to the previous code and image if it is not. Settings, data and certificates stay.
+2. **Each client server**: `sudo fyntune-update`. It fetches the latest kit (scripts, Dockerfile, compose file) and agent
+   from the monitor with the agent's own key (checksums verified; no password, no repository access), applies them and
+   restarts the agent. `agent.json` (logs, database, OpenTelemetry) and the Docker `.env` are never replaced.
+   `sudo fyntune-update --auto on` does this every night at about 03:00.
+
+Servers installed before this existed: run `sudo ./update.sh` once from a new copy of the `deploy/agent` folder; after
+that the `fyntune-update` command is there.
+
 ## Traces and dependencies (OpenTelemetry)
 Each agent is also an OpenTelemetry endpoint on `127.0.0.1:4318` (OTLP/HTTP, protobuf or JSON). Point the app's
 OpenTelemetry instrumentation at it and the **Dependencies** and **Traces** tabs fill; nothing goes to a third party and no

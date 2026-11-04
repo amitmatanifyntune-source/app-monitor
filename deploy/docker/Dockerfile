@@ -26,8 +26,11 @@ RUN addgroup -S monitor && adduser -S -G monitor -h /app monitor
 WORKDIR /app
 COPY --from=jars /src/server/target/app-monitor-server.jar /app/app-monitor-server.jar
 COPY --from=jars /src/agent/target/fyntune-agent.jar /app/fyntune-agent.jar
+# the client install kit, handed to agents' servers by fyntune-update (GET /ingest/v1/agent-kit.zip)
+COPY deploy/agent/ /app/agent-kit/
 USER monitor
 ENV AGENT_JAR=/app/fyntune-agent.jar \
+    AGENT_KIT=/app/agent-kit \
     PORT=8095 \
     JAVA_OPTS="-XX:MaxRAMPercentage=75 -XX:+ExitOnOutOfMemoryError"
 EXPOSE 8095

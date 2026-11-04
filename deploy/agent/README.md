@@ -25,6 +25,17 @@ on `127.0.0.1:4318`; `OTEL_SAMPLE=0.25` records a quarter of requests). Running 
 `/var/backups/fyntune-agent/<date>/` first. No monitor password on hand? Put the `agent.json` downloaded from
 Setup → Agents and `fyntune-agent.jar` next to the script; it then needs no sign-in (except to add the health check).
 
+## Updating later: one command
+```bash
+sudo fyntune-update              # latest kit and agent from the monitor; settings stay
+sudo fyntune-update --auto on    # every night at about 03:00 (randomised by up to an hour); --auto off to stop
+```
+The installers put this command in place. It fetches the kit and agent from the monitor this agent reports to, with
+the agent's own id and key, verifies the checksums, keeps a backup of what it replaces under
+`/var/backups/fyntune-agent/`, and never replaces `agent.json` or the Docker `.env`. The monitor must have been updated
+first (`deploy/docker/update.sh`). On a server installed before this existed, run `sudo ./update.sh` once from a new
+copy of this folder.
+
 ## Only OpenTelemetry, on a server that already has the agent
 No need to run the whole setup again:
 

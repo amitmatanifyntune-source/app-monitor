@@ -40,8 +40,12 @@ docker compose build -q
 echo "==> Self-test"
 docker compose run --rm agent --test || { echo; echo "Fix the lines marked with a cross above, then run this script again."; exit 1; }
 
+# the one-command updater (this folder is the agent folder)
+chmod 755 update.sh && ln -sf "$(pwd)/update.sh" /usr/local/bin/fyntune-update
+
 echo "==> Start"
 docker compose up -d
 docker compose ps
 echo
 echo "Agent running. Logs: sudo docker compose -f $(pwd)/docker-compose.yml logs -f"
+echo "Updates: sudo fyntune-update   (nightly: sudo fyntune-update --auto on)"
