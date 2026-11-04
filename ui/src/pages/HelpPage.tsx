@@ -175,7 +175,9 @@ SELECT policy_no AS ref FROM policy WHERE status = 'ISSUED' AND document_id IS N
             It turns on the agent's receiver, installs the PHP extension, sets PHP-FPM's variables and adds the app's OpenTelemetry Composer packages
             (dry run first, nothing upgraded, rolled back if the app no longer loads); <span className="mono">--disable</span> turns tracing off again.
             Then commit <span className="mono">composer.json</span> and <span className="mono">composer.lock</span> to the app's repository so the next deploy keeps them.
-            An agent older than 0.2 is upgraded in place first, fetched from this server with its own key; <span className="mono">sudo ./update-agent.sh</span> upgrades the agent alone. By hand, the same is:</p>
+            An agent older than 0.2 is upgraded in place first, fetched from this server with its own key; <span className="mono">sudo ./update-agent.sh</span> upgrades the agent alone.
+            It finds the app from the web server's configuration (or asks when there are several; <span className="mono">--app-dir</span> names it), covers every running PHP-FPM version,
+            and <span className="mono">--check</span> reports what is in place without changing anything. By hand, the same is:</p>
           <Code>{`sudo pecl install opentelemetry            # PHP 8.0+, then enable extension=opentelemetry.so
 composer require open-telemetry/sdk open-telemetry/exporter-otlp php-http/guzzle7-adapter \
   open-telemetry/opentelemetry-auto-laravel open-telemetry/opentelemetry-auto-pdo open-telemetry/opentelemetry-auto-guzzle

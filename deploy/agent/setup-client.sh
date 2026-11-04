@@ -290,7 +290,9 @@ fi
 if [ "$OTEL" = 1 ]; then
   step "4b/6 OpenTelemetry for PHP (traces and outbound calls)"
   # the same script turns it on later without a full setup; the agent's otlp setting is written in step 5
-  OTEL_SAMPLE="${OTEL_SAMPLE:-1.0}" "$KIT/enable-otel.sh" --service "$APP_CODE" --app-dir "$APP_DIR" --no-agent | sed '/^==>/d; /^Done\./d; /^$/d' || warn "OpenTelemetry step failed; the rest of the setup continues"
+  OTEL_ARGS=(--service "$APP_CODE" --no-agent)
+  [ -f "$APP_DIR/composer.json" ] && OTEL_ARGS+=(--app-dir "$APP_DIR")
+  OTEL_SAMPLE="${OTEL_SAMPLE:-1.0}" "$KIT/enable-otel.sh" "${OTEL_ARGS[@]}" | sed '/^==>/d; /^Done\./d; /^$/d' || warn "OpenTelemetry step failed; the rest of the setup continues"
 fi
 
 # ---------------------------------------------------------------------------------------------------------------

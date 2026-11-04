@@ -44,7 +44,18 @@ sudo ./enable-otel.sh                  # PHP: agent's otlp setting + PHP extensi
 sudo ./enable-otel.sh --sample 0.25    # record a quarter of PHP requests (default: all)
 sudo ./enable-otel.sh --java           # Java: agent only, then prints the -javaagent flags to add
 sudo ./enable-otel.sh --disable        # turn PHP tracing off again
+sudo ./enable-otel.sh --check          # read-only: what is in place, what is missing
+sudo ./enable-otel.sh --no-agent --app-dir /var/www/html/old/uat-jnm/backend   # a specific app
 ```
+
+**Which app:** the script looks at the folders nginx (`root`) and Apache (`DocumentRoot`) serve, then searches
+`/var/www`, `/srv`, `/home` and `/opt` a few levels down for PHP apps (`composer.json` plus `vendor/`). One app: it is
+used. Several: you are asked which (or all); without a terminal it lists them and prints the `--app-dir` commands
+instead of guessing. `--app-dir` can be given more than once.
+
+**Which PHP:** every PHP-FPM version that is running gets the extension and the settings, not just the command-line
+PHP (often 8.4 on the shell while the site runs on php8.2-fpm). The `php<v>-opentelemetry` package is used where the
+distribution has it (the ondrej PPA does), `pecl` otherwise. After writing the settings it checks they are in place.
 
 It touches only the agent's `otlp` setting (restarting the agent if needed), the PHP `opentelemetry` extension,
 PHP-FPM's `OTEL_*` variables and the app's Composer packages; web server, logs, database user and the monitor
