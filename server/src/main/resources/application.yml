@@ -37,6 +37,8 @@ app:
     origins: ${APP_CORS_ORIGINS:}
   # the agent jar administrators can download from Setup and Help
   agent-jar: ${AGENT_JAR:../agent/target/fyntune-agent.jar}
+  # the client install kit (deploy/agent: scripts and Docker files) that agents' servers update themselves from
+  agent-kit: ${AGENT_KIT:../deploy/agent}
   # an agent is DOWN when it has sent nothing for this long
   agent-silent-minutes: 3
   alerts:

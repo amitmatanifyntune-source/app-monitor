@@ -40,7 +40,7 @@ Agents connect to `https://monitor.example.com` (outbound 443 from the app serve
 | Status | `sudo docker compose ps` |
 | Logs | `sudo docker compose logs -f server` |
 | Restart | `sudo docker compose restart server` |
-| Upgrade to the latest code | `git pull && sudo docker compose up -d --build` |
+| Update to the latest code | `sudo ./update.sh` (backup, pull, build, restart, health check, automatic rollback) |
 | Stop / start | `sudo docker compose down` / `sudo docker compose up -d` (data is kept) |
 | Backup now | `sudo ./backup.sh` |
 | Daily backup at 02:30 | `echo "30 2 * * * root $(pwd)/backup.sh" \| sudo tee /etc/cron.d/app-monitor-backup` |

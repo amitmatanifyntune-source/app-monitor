@@ -132,6 +132,11 @@ agent's own `X-Agent-Id` and `X-Agent-Key` authenticate it, so no administrator 
 server. Headers `X-Agent-Version` and `X-Agent-Sha256` give the version (from the jar's manifest) and checksum; the
 scripts refuse a download whose checksum does not match. Each fetch is written to the audit log as `agent:<id>`.
 
+## `GET /ingest/v1/agent-kit.zip`
+The client install kit (the `deploy/agent` scripts, Dockerfile, compose file and README) as a flat zip, for
+`fyntune-update` on an agent's server; same authentication as `agent.jar`. `X-Kit-Sha256` is the zip's checksum and
+`X-Agent-Version` the agent it goes with. Agent configs, `.env` files and jars are never included.
+
 ## `POST http://127.0.0.1:7071/v1/events` (agent, local only)
 In-app libraries (Laravel, Spring, browser gateway) send events here. The body is a JSON array of `events[]` objects as
 above. Requests can also be sent so the agent counts them like access-log lines:

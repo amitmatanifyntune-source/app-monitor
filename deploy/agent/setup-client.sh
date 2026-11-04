@@ -301,6 +301,11 @@ fi
 systemctl enable --now docker >/dev/null
 install -m 644 "$KIT/Dockerfile" "$TARGET/Dockerfile"
 install -m 644 "$KIT/docker-compose.yml" "$TARGET/docker-compose.yml"
+# the kit and the one-command updater, so later updates are just: sudo fyntune-update
+mkdir -p "$TARGET/kit"
+for f in "$KIT"/*.sh "$KIT"/Dockerfile "$KIT"/docker-compose.yml "$KIT"/README.md "$KIT"/*.example.json; do [ -f "$f" ] && install -m 644 "$f" "$TARGET/kit/"; done
+chmod 755 "$TARGET"/kit/*.sh
+install -m 755 "$KIT/update.sh" "$TARGET/update.sh" && ln -sf "$TARGET/update.sh" /usr/local/bin/fyntune-update
 [ -f "$KIT/fyntune-agent.jar" ] && install -m 644 "$KIT/fyntune-agent.jar" "$TARGET/fyntune-agent.jar"
 echo "APP_DIR=$APP_DIR" > "$TARGET/.env"
 [ -f "$TARGET/agent.json" ] && cp -a "$TARGET/agent.json" "$BACKUP/agent.json"
@@ -351,4 +356,5 @@ step "6/6 Done"
 note "App:        $APP_NAME ($APP_CODE) on $MONITOR_URL"
 note "Health:     ${HEALTH_URL:-not set - add one in Setup > Checks (it decides when the app is Down)}"
 note "Agent:      $TARGET (agent.json, docker-compose.yml); backups of changed files in $BACKUP"
+note "Updates:    sudo fyntune-update   (nightly: sudo fyntune-update --auto on)"
 note "Check:      the app should show Up in the monitor within 2-3 minutes"

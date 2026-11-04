@@ -35,6 +35,11 @@ p = sys.argv[1]; c = json.load(open(p))
 if c.get("spoolDir") in (None, "./spool", "/data"):
     c["spoolDir"] = "/opt/fyntune-agent/spool"; json.dump(c, open(p, "w"), indent=2)
 PY
+# the kit and the one-command updater, so later updates are just: sudo fyntune-update
+mkdir -p "$HOME_DIR/kit"
+for f in "$(pwd)"/*.sh "$(pwd)"/Dockerfile "$(pwd)"/docker-compose.yml "$(pwd)"/README.md "$(pwd)"/*.example.json; do [ -f "$f" ] && install -m 644 "$f" "$HOME_DIR/kit/"; done
+chmod 755 "$HOME_DIR"/kit/*.sh
+install -m 755 "$(pwd)/update.sh" "$HOME_DIR/update.sh" && ln -sf "$HOME_DIR/update.sh" /usr/local/bin/fyntune-update
 chown -R fyntune-agent: "$HOME_DIR"
 
 echo "==> Self-test"
@@ -75,3 +80,4 @@ systemctl enable --now fyntune-agent
 systemctl --no-pager status fyntune-agent | head -5
 echo
 echo "Agent running with $JAVA21. Logs: journalctl -u fyntune-agent -f"
+echo "Updates: sudo fyntune-update   (nightly: sudo fyntune-update --auto on)"

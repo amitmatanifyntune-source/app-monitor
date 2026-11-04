@@ -25,15 +25,20 @@ import java.util.jar.JarFile;
 public class IngestController {
     private final AgentAuth auth;
     private final IngestService svc;
-    private final File jar;
+    private final File jar, kit;
     private final Audit audit;
+    private long kitStamp = -1;
+    private byte[] kitZip;
+    private String kitSha256;
     private long jarStamp = -1;
     private String jarVersion, jarSha256;
 
-    public IngestController(AgentAuth auth, IngestService svc, @Value("${app.agent-jar}") String jarPath, Audit audit) {
+    public IngestController(AgentAuth auth, IngestService svc, @Value("${app.agent-jar}") String jarPath,
+                            @Value("${app.agent-kit}") String kitPath, Audit audit) {
         this.auth = auth;
         this.svc = svc;
         this.jar = new File(jarPath);
+        this.kit = new File(kitPath);
         this.audit = audit;
     }
 
@@ -87,5 +92,57 @@ public class IngestController {
             throw new ApiException(HttpStatus.INTERNAL_SERVER_ERROR, "Cannot read the agent jar");
         }
         jarStamp = jar.lastModified();
+    }
+
+    /** Kit files never handed out: an agent's own config and keys, runtime files, the jar (fetched separately). */
+    private static final java.util.Set<String> KIT_SKIP_EXT = java.util.Set.of(".jar", ".log", ".bak");
+    private static final java.util.Set<String> KIT_SKIP = java.util.Set.of("agent.json", ".env", "admin-password", "registration.json");
+
+    /**
+     * The client install kit (scripts, Dockerfile, compose file, README) as a zip, for {@code fyntune-update} on an
+     * agent's server: with the agent's own id and key, so servers update their scripts as well as the agent, without
+     * access to the repository. Header X-Kit-Sha256 is the zip's checksum; X-Agent-Version the jar it goes with.
+     */
+    @GetMapping("/agent-kit.zip")
+    public ResponseEntity<byte[]> agentKit(@RequestHeader(value = "X-Agent-Id", required = false) String id,
+                                           @RequestHeader(value = "X-Agent-Key", required = false) String key) {
+        AgentAuth.Agent a = auth.check(id, key);
+        byte[] zip = kitZip();
+        if (jar.isFile()) describeJar();
+        audit.log("agent:" + a.id(), "AGENT_KIT_FETCHED", null, jarVersion);
+        return ResponseEntity.ok()
+                .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=\"fyntune-agent-kit.zip\"")
+                .header("X-Kit-Sha256", kitSha256)
+                .header("X-Agent-Version", jarVersion == null ? "unknown" : jarVersion)
+                .contentType(MediaType.APPLICATION_OCTET_STREAM)
+                .body(zip);
+    }
+
+    /** The kit folder's regular files, zipped once and again only when one of them changes. */
+    private synchronized byte[] kitZip() {
+        File[] files = kit.isDirectory() ? kit.listFiles(File::isFile) : null;
+        if (files == null || files.length == 0) throw new ApiException(HttpStatus.NOT_FOUND, "No agent kit on this server (app.agent-kit)");
+        java.util.Arrays.sort(files);
+        long stamp = 0;
+        for (File f : files) stamp = Math.max(stamp, f.lastModified()) + f.length();
+        if (stamp == kitStamp && kitZip != null) return kitZip;
+        try (var bos = new java.io.ByteArrayOutputStream(); var zos = new java.util.zip.ZipOutputStream(bos)) {
+            for (File f : files) {
+                String n = f.getName();
+                if (KIT_SKIP.contains(n) || n.startsWith(".") || KIT_SKIP_EXT.stream().anyMatch(n::endsWith)) continue;
+                var e = new java.util.zip.ZipEntry(n);
+                e.setTime(f.lastModified());
+                zos.putNextEntry(e);
+                Files.copy(f.toPath(), zos);
+                zos.closeEntry();
+            }
+            zos.finish();
+            kitZip = bos.toByteArray();
+            kitSha256 = HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(kitZip));
+            kitStamp = stamp;
+            return kitZip;
+        } catch (Exception e) {
+            throw new ApiException(HttpStatus.INTERNAL_SERVER_ERROR, "Cannot pack the agent kit");
+        }
     }
 }
