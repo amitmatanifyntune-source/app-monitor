@@ -8,12 +8,15 @@
 #   sudo ./enable-otel.sh --sample 0.25           # record a quarter of requests in PHP (default: all)
 #   sudo ./enable-otel.sh --java                  # Java app: agent only, then prints the -javaagent flags
 #   sudo ./enable-otel.sh --disable               # turn PHP tracing off again (agent untouched)
+#   sudo ./enable-otel.sh --check                 # read-only: what is in place, what is missing
 #
 # Options: --service NAME (name shown in traces; default: this server's name)  --app-dir DIR  --sample RATIO
 #          --java  --no-php  --no-agent  --agent-dir DIR (default /opt/fyntune-agent)  --disable
 #          --no-composer (do not add the OpenTelemetry packages to the PHP app; print the command instead)
 #          --upgrade-agent (also upgrade an agent that is already 0.2+ to the monitor's current one)
 #          --upgrade-only (just upgrade the agent; nothing else changes. update-agent.sh does this)
+#          --check (read-only: report what is in place and what is missing; changes nothing)
+#          --app-dir can be given more than once (several apps on one server)
 # For a PHP app it also adds the OpenTelemetry Composer packages to the app on this server: a dry run first (nothing
 # changes if it would conflict), only new packages (none of the app's are upgraded), run as the app's owner, then a
 # check that the app still loads; on any failure composer.json, composer.lock and vendor/ are put back. Commit the two
@@ -26,13 +29,13 @@ set -euo pipefail
 
 KIT="$(cd "$(dirname "$0")" && pwd)"
 AGENT_DIR=/opt/fyntune-agent
-SERVICE=""; APP_DIR=""; SAMPLE="${OTEL_SAMPLE:-1.0}"; JAVA=0; PHP=1; AGENT=1; DISABLE=0; COMPOSER=1; UPGRADE=0; UPGRADE_ONLY=0
+SERVICE=""; APP_DIRS=(); SAMPLE="${OTEL_SAMPLE:-1.0}"; JAVA=0; PHP=1; AGENT=1; DISABLE=0; COMPOSER=1; UPGRADE=0; UPGRADE_ONLY=0; CHECK=0
 while [ $# -gt 0 ]; do
   case "$1" in
-    --service) SERVICE="$2"; shift ;; --app-dir) APP_DIR="$2"; shift ;; --sample) SAMPLE="$2"; shift ;;
+    --service) SERVICE="$2"; shift ;; --app-dir) APP_DIRS+=("${2%/}"); shift ;; --sample) SAMPLE="$2"; shift ;;
     --agent-dir) AGENT_DIR="$2"; shift ;; --java) JAVA=1; PHP=0 ;; --no-php) PHP=0 ;; --no-agent) AGENT=0 ;;
-    --disable) DISABLE=1 ;; --no-composer) COMPOSER=0 ;; --upgrade-agent) UPGRADE=1 ;;
-    --upgrade-only) UPGRADE=1; UPGRADE_ONLY=1; PHP=0 ;; -h|--help) sed -n '2,28p' "$0"; exit 0 ;;
+    --disable) DISABLE=1 ;; --check) CHECK=1 ;; --no-composer) COMPOSER=0 ;; --upgrade-agent) UPGRADE=1 ;;
+    --upgrade-only) UPGRADE=1; UPGRADE_ONLY=1; PHP=0 ;; -h|--help) sed -n '2,30p' "$0"; exit 0 ;;
     *) echo "Unknown option $1 (see --help)"; exit 1 ;;
   esac
   shift
@@ -42,9 +45,87 @@ step() { echo; echo "==> $*"; }
 note() { echo "    $*"; }
 warn() { echo "    ! $*"; }
 BACKUP="/var/backups/fyntune-agent/$(date +%Y%m%d-%H%M%S)-otel"
-mkdir -p "$BACKUP"
 SERVICE="${SERVICE:-$(hostname -s | tr 'A-Z_.' 'a-z--')}"
 PHPV=""; command -v php >/dev/null && PHPV="$(php -r 'echo PHP_MAJOR_VERSION.".".PHP_MINOR_VERSION;')"
+
+# ------------------------------------------------------------------ PHP: which versions, which apps
+
+# The PHP-FPM versions that are running (they serve the apps), else those installed, else the command-line PHP.
+# The command-line PHP is often not the one serving the app (e.g. php 8.4 on the shell, php8.2-fpm for the site).
+fpm_versions() {
+  local v
+  v="$(systemctl list-units --type=service --state=running --no-legend 'php*-fpm.service' 2>/dev/null | grep -oE 'php[0-9]+\.[0-9]+-fpm' | sed -E 's/php|-fpm//g' | sort -uV)"
+  [ -z "$v" ] && v="$(ls -d /etc/php/*/fpm 2>/dev/null | cut -d/ -f4 | sort -uV)"
+  [ -z "$v" ] && v="$PHPV"
+  echo $v
+}
+
+# PHP apps on this server (folders with composer.json and vendor/): first those the web server serves (nginx root,
+# Apache DocumentRoot, or their parent for Laravel's public/), then a search a few levels down.
+find_php_apps() {
+  {
+    { grep -rhoE '^[[:space:]]*root[[:space:]]+[^;]+' /etc/nginx/sites-enabled /etc/nginx/conf.d 2>/dev/null | awk '{print $2}'
+      grep -rhoiE '^[[:space:]]*DocumentRoot[[:space:]]+[^[:space:]]+' /etc/apache2/sites-enabled 2>/dev/null | awk '{print $2}'; } |
+      tr -d '";' | sort -u | while read -r r; do
+        for x in "$r" "${r%/public}" "$(dirname "$r")"; do [ -f "$x/composer.json" ] && [ -d "$x/vendor" ] && readlink -f "$x"; done
+      done
+    find /var/www /srv /home /opt -maxdepth 5 -name composer.json -not -path '*/vendor/*' -not -path '*/node_modules/*' \
+         -not -path '/opt/fyntune-agent/*' -not -path '/opt/app-monitor/*' 2>/dev/null | while read -r f; do
+      d="$(dirname "$f")"; [ -d "$d/vendor" ] && readlink -f "$d"
+    done
+  } | awk '!seen[$0]++'
+}
+
+php_ext_loaded() { "php-fpm$1" -m 2>/dev/null | grep -qx opentelemetry; }
+
+# The extension for one PHP version: the distribution's php<v>-opentelemetry package when there is one (the ondrej
+# PPA has them), else pecl for the command-line PHP; enabled for PHP-FPM as well as the command line.
+ensure_php_ext() {
+  local v="$1"
+  if php_ext_loaded "$v"; then note "PHP $v: opentelemetry extension loaded"; return 0; fi
+  if apt-cache show "php$v-opentelemetry" >/dev/null 2>&1; then
+    apt-get install -y "php$v-opentelemetry" >/dev/null 2>&1 && note "PHP $v: installed php$v-opentelemetry"
+  elif [ "$v" = "$PHPV" ]; then
+    apt-get install -y "php$v-dev" php-pear build-essential >/dev/null 2>&1
+    printf '\n' | pecl install opentelemetry >/dev/null 2>&1 || pecl upgrade opentelemetry >/dev/null 2>&1 || true
+  else
+    warn "PHP $v serves an app but has no php$v-opentelemetry package, and pecl builds only for PHP $PHPV here."
+    warn "  Build it: sudo apt install php$v-dev php-pear && sudo pecl -d php_suffix=$v install opentelemetry"
+    return 1
+  fi
+  [ -f "/etc/php/$v/mods-available/opentelemetry.ini" ] || echo "extension=opentelemetry.so" > "/etc/php/$v/mods-available/opentelemetry.ini"
+  phpenmod -v "$v" -s ALL opentelemetry 2>/dev/null || phpenmod -v "$v" opentelemetry
+  if php_ext_loaded "$v"; then note "PHP $v: opentelemetry extension enabled for PHP-FPM"; return 0; fi
+  warn "PHP $v: the extension did not load in PHP-FPM (check: php-fpm$v -m | grep opentelemetry)"; return 1
+}
+
+otel_lines() { grep -hc 'env\[OTEL_' /etc/php/"$1"/fpm/pool.d/*.conf 2>/dev/null | awk '{n+=$1} END {print n+0}'; }
+
+# ------------------------------------------------------------------ --check: report only
+if [ "$CHECK" = 1 ]; then
+  ok() { echo "  ✓ $*"; }; bad() { echo "  ✗ $*"; }
+  echo "OpenTelemetry on $(hostname)"
+  if [ -f "$AGENT_DIR/agent.json" ]; then
+    python3 -c 'import json,sys; o=json.load(open(sys.argv[1])).get("otlp") or {}; sys.exit(0 if o.get("enabled", True) is not False else 1)' "$AGENT_DIR/agent.json" \
+      && ok "agent in $AGENT_DIR, OpenTelemetry on in agent.json" || bad "agent.json has otlp.enabled=false: run sudo ./enable-otel.sh"
+  else bad "no agent in $AGENT_DIR (--agent-dir?)"; fi
+  if ss -ltn 2>/dev/null | grep -q ':4318 '; then
+    code="$(curl -s -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' -d '{"resourceSpans":[]}' http://127.0.0.1:4318/v1/traces)"
+    [ "$code" = 200 ] && ok "agent receives on 127.0.0.1:4318 (test export answered 200)" || bad "port 4318 is open but answered $code"
+  else bad "nothing listens on 127.0.0.1:4318: agent older than 0.2.0, or otlp off (sudo fyntune-update, then this script)"; fi
+  for v in $(fpm_versions); do
+    php_ext_loaded "$v" && ok "PHP-FPM $v: extension loaded" || bad "PHP-FPM $v: extension missing (sudo ./enable-otel.sh --no-agent)"
+    n="$(otel_lines "$v")"; [ "$n" -ge 5 ] && ok "PHP-FPM $v: $n OTEL_ settings in its pools" || bad "PHP-FPM $v: no OTEL_ settings in /etc/php/$v/fpm/pool.d (sudo ./enable-otel.sh --no-agent)"
+  done
+  mapfile -t apps < <( [ ${#APP_DIRS[@]} -gt 0 ] && printf '%s\n' "${APP_DIRS[@]}" || find_php_apps )
+  [ ${#apps[@]} -eq 0 ] && bad "no PHP app found (composer.json + vendor/): pass --app-dir /path/to/app"
+  for a in "${apps[@]}"; do
+    [ -d "$a/vendor/open-telemetry/sdk" ] && ok "app $a: OpenTelemetry packages installed" || bad "app $a: no OpenTelemetry packages (sudo ./enable-otel.sh --no-agent --app-dir $a)"
+  done
+  echo "Traces appear in the monitor about a minute after real requests; Dependencies fills first."
+  exit 0
+fi
+mkdir -p "$BACKUP"
 
 # ------------------------------------------------------------------ the app's OpenTelemetry packages (PHP)
 
@@ -106,11 +187,13 @@ install_otel_packages() {
 # ---------------------------------------------------------------------------------------------------------------
 if [ "$DISABLE" = 1 ]; then
   step "Turning PHP tracing off"
-  [ -n "$PHPV" ] || { warn "php not found"; exit 0; }
-  POOLDIR="/etc/php/$PHPV/fpm/pool.d"
-  cp -a "$POOLDIR" "$BACKUP/php-fpm-pool.d"
-  for f in "$POOLDIR"/*.conf; do sed -i '/; >>> fyntune-otel/,/; <<< fyntune-otel/d' "$f"; done
-  "php-fpm$PHPV" -t >/dev/null 2>&1 && systemctl reload "php$PHPV-fpm" && note "PHP-FPM no longer sends traces (the extension and the app's OpenTelemetry packages stay installed, idle)"
+  for v in $(fpm_versions); do
+    POOLDIR="/etc/php/$v/fpm/pool.d"; [ -d "$POOLDIR" ] || continue
+    mkdir -p "$BACKUP/php$v" && cp -a "$POOLDIR" "$BACKUP/php$v/"
+    for f in "$POOLDIR"/*.conf; do sed -i '/; >>> fyntune-otel/,/; <<< fyntune-otel/d' "$f"; done
+    "php-fpm$v" -t >/dev/null 2>&1 && systemctl reload "php$v-fpm" && note "PHP-FPM $v no longer sends traces"
+  done
+  note "(the extension and the apps' OpenTelemetry packages stay installed, idle)"
   exit 0
 fi
 
@@ -250,21 +333,17 @@ fi
 
 # ---------------------------------------------------------------------------------------------------------------
 if [ "$PHP" = 1 ]; then
-  step "PHP: opentelemetry extension and PHP-FPM settings"
-  if [ -z "$PHPV" ]; then warn "php not found; skipped (use --java for a Java app)"
-  elif [ "${PHPV%%.*}" -lt 8 ]; then warn "PHP $PHPV: OpenTelemetry needs PHP 8.0 or newer; skipped"
+  step "PHP: extension and PHP-FPM settings"
+  VERSIONS="$(fpm_versions)"
+  if [ -z "$VERSIONS" ]; then warn "no PHP found; skipped (use --java for a Java app)"
   else
-    if php -m 2>/dev/null | grep -qx opentelemetry; then note "opentelemetry extension already loaded"
-    else
-      apt-get install -y "php$PHPV-dev" php-pear build-essential >/dev/null
-      printf '\n' | pecl install opentelemetry >/dev/null 2>&1 || pecl upgrade opentelemetry >/dev/null 2>&1 || true
-      echo "extension=opentelemetry.so" > "/etc/php/$PHPV/mods-available/opentelemetry.ini"
-      phpenmod -v "$PHPV" opentelemetry
-      php -m | grep -qx opentelemetry && note "opentelemetry extension installed for PHP $PHPV" || warn "the extension did not load; see: pecl install opentelemetry"
-    fi
-    POOLDIR="/etc/php/$PHPV/fpm/pool.d"
-    if [ -d "$POOLDIR" ]; then
-      cp -a "$POOLDIR" "$BACKUP/php-fpm-pool.d"
+    note "PHP-FPM serving apps: $VERSIONS (command line: ${PHPV:-none})"
+    for v in $VERSIONS; do
+      if [ "${v%%.*}" -lt 8 ]; then warn "PHP $v: OpenTelemetry needs PHP 8.0 or newer; skipped"; continue; fi
+      ensure_php_ext "$v" || true
+      POOLDIR="/etc/php/$v/fpm/pool.d"
+      if [ ! -d "$POOLDIR" ]; then warn "no $POOLDIR (PHP $v not served by PHP-FPM?): set the OTEL_* variables for that runtime by hand"; continue; fi
+      mkdir -p "$BACKUP/php$v" && cp -a "$POOLDIR" "$BACKUP/php$v/"
       for f in "$POOLDIR"/*.conf; do
         sed -i '/; >>> fyntune-otel/,/; <<< fyntune-otel/d' "$f"
         cat >> "$f" <<OTELENV
@@ -282,23 +361,53 @@ env[OTEL_TRACES_SAMPLER_ARG] = $SAMPLE
 ; <<< fyntune-otel
 OTELENV
       done
-      if "php-fpm$PHPV" -t >/dev/null 2>&1; then systemctl reload "php$PHPV-fpm"; note "PHP-FPM sends traces to 127.0.0.1:4318 as \"$SERVICE\" (sample $SAMPLE)"
-      else rm -rf "$POOLDIR" && cp -a "$BACKUP/php-fpm-pool.d" "$POOLDIR"; warn "php-fpm -t failed; pool config restored"; fi
-    else warn "no $POOLDIR (not PHP-FPM?); set the OTEL_* variables for your PHP runtime by hand"; fi
-    if [ -z "$APP_DIR" ]; then
-      for d in /var/www/*/ /var/www/html/ /srv/*/; do [ -f "${d}composer.json" ] && { APP_DIR="${d%/}"; break; }; done
-    fi
-    if [ -n "$APP_DIR" ] && [ -f "$APP_DIR/composer.json" ] && [ ! -d "$APP_DIR/vendor/open-telemetry/sdk" ]; then
-      if [ "$COMPOSER" = 1 ]; then install_otel_packages "$APP_DIR"
+      if "php-fpm$v" -t >/dev/null 2>&1; then
+        systemctl reload "php$v-fpm"
+        n="$(otel_lines "$v")"
+        [ "$n" -ge 5 ] && note "PHP-FPM $v: sends traces to 127.0.0.1:4318 as \"$SERVICE\" (sample $SAMPLE; $n settings in place)" \
+                       || warn "PHP-FPM $v: the settings did not stay in its pool files; check $POOLDIR"
       else
-        warn "the app in $APP_DIR has no OpenTelemetry packages yet (left alone: --no-composer). Add them in the app's repository:"
+        rm -rf "$POOLDIR" && cp -a "$BACKUP/php$v/pool.d" "$POOLDIR"
+        warn "PHP-FPM $v: php-fpm -t failed with the new settings; pool config restored"
+      fi
+    done
+
+    # which app(s) get the OpenTelemetry packages
+    if [ ${#APP_DIRS[@]} -eq 0 ]; then
+      mapfile -t FOUND < <(find_php_apps)
+      if [ ${#FOUND[@]} -eq 1 ]; then
+        APP_DIRS=("${FOUND[0]}"); note "app found: ${FOUND[0]}"
+      elif [ ${#FOUND[@]} -gt 1 ] && [ -t 0 ]; then
+        echo "    Several PHP apps on this server. Which ones get the OpenTelemetry packages?"
+        for n in "${!FOUND[@]}"; do echo "      $((n + 1))) ${FOUND[$n]}"; done
+        read -r -p "    Numbers separated by spaces, 'a' for all, Enter for none: " pick
+        if [ "$pick" = a ]; then APP_DIRS=("${FOUND[@]}")
+        else for n in $pick; do [ "$n" -ge 1 ] 2>/dev/null && [ "$n" -le ${#FOUND[@]} ] && APP_DIRS+=("${FOUND[$((n - 1))]}"); done; fi
+      elif [ ${#FOUND[@]} -gt 1 ]; then
+        warn "several PHP apps found and no one to ask; their packages were NOT added. Run again with --app-dir:"
+        for a in "${FOUND[@]}"; do warn "  sudo $0 --no-agent --app-dir $a"; done
+      else
+        warn "no PHP app found (a folder with composer.json and vendor/). The packages were NOT added."
+        warn "  Run again with the app's folder: sudo $0 --no-agent --app-dir /path/to/app"
+      fi
+    fi
+    for APP_DIR in "${APP_DIRS[@]}"; do
+      if [ ! -f "$APP_DIR/composer.json" ]; then warn "$APP_DIR has no composer.json; skipped"; continue; fi
+      if [ -d "$APP_DIR/vendor/open-telemetry/sdk" ]; then note "$APP_DIR already has the OpenTelemetry packages"
+      elif [ "$COMPOSER" = 1 ]; then install_otel_packages "$APP_DIR"
+      else
+        warn "$APP_DIR has no OpenTelemetry packages (left alone: --no-composer). Add them in the app's repository:"
         warn "  composer require $(otel_packages "$APP_DIR")"
       fi
-    elif [ -n "$APP_DIR" ] && [ -d "$APP_DIR/vendor/open-telemetry/sdk" ]; then
-      note "the app already has the OpenTelemetry packages: traces should appear within a minute or two of traffic"
-    fi
+      # Laravel with a cached config: rebuild it so nothing stale hides the new packages
+      if [ -f "$APP_DIR/artisan" ] && [ -f "$APP_DIR/bootstrap/cache/config.php" ]; then
+        (cd "$APP_DIR" && sudo -u "$(stat -c %U "$APP_DIR/artisan")" php artisan config:cache >/dev/null 2>&1) && note "$APP_DIR: Laravel config cache rebuilt" || true
+      fi
+    done
     # new code in vendor/: reload PHP-FPM so its opcache picks it up
-    [ -n "$APP_DIR" ] && [ -d "$APP_DIR/vendor/open-telemetry/sdk" ] && systemctl reload "php$PHPV-fpm" 2>/dev/null || true
+    for v in $VERSIONS; do systemctl reload "php$v-fpm" 2>/dev/null || true; done
+    echo
+    note "check any time, changing nothing: sudo $0 --check"
   fi
 fi
 
